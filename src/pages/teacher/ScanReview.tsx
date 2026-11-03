@@ -205,7 +205,7 @@ export const ScanReview: React.FC = () => {
           <h2 className="text-lg font-bold text-navy-900">Extracted text</h2>
           <p className="text-xs text-content-secondary">
             {results
-              ? `${results.modelVersion} · ${results.results.length} file(s) processed`
+              ? `${results.provider} · ${results.modelVersion} · ${results.results.length} file(s) processed`
               : 'OCR results will appear here for verification.'}
           </p>
         </div>

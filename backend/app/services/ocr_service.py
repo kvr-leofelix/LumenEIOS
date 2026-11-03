@@ -140,7 +140,7 @@ class QwenVisionOCRProvider(BaseOCRProvider):
         try:
             import torch
             from qwen_vl_utils import process_vision_info
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+            from transformers import AutoConfig, AutoProcessor, Qwen2_5_VLForConditionalGeneration
         except ImportError as exc:
             raise QwenOCRUnavailableError(
                 "Qwen OCR dependencies are missing. Install backend/requirements-ocr.txt "
@@ -159,8 +159,17 @@ class QwenVisionOCRProvider(BaseOCRProvider):
                 min_pixels=512 * 28 * 28,
                 max_pixels=2048 * 28 * 28,
             )
+            config = AutoConfig.from_pretrained(model_id)
+            # lm_head has no quantized weights in these AWQ checkpoints (it is tied to
+            # embed_tokens or stored as plain float16). Converting it would replace it
+            # with randomly initialized AWQ weights and break inference.
+            quantization_config = getattr(config, "quantization_config", None)
+            if quantization_config:
+                excluded = quantization_config.get("modules_to_not_convert") or []
+                quantization_config["modules_to_not_convert"] = [*excluded, "lm_head"]
             model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_id,
+                config=config,
                 torch_dtype=torch.float16,
                 device_map="auto",
             )
@@ -228,24 +237,31 @@ class QwenVisionOCRProvider(BaseOCRProvider):
 
         if is_pdf:
             try:
-                import fitz
+                import pymupdf
             except ImportError as exc:
                 raise QwenOCRUnavailableError(
                     "PDF OCR requires PyMuPDF. Install backend/requirements-ocr.txt."
                 ) from exc
 
-            with fitz.open(document_path) as pdf:
+            try:
+                pdf_document = pymupdf.open(document_path)
+            except Exception as exc:
+                raise QwenOCRInputError("The uploaded PDF could not be opened.") from exc
+
+            with pdf_document as pdf:
+                if pdf.needs_pass:
+                    raise QwenOCRInputError("Password-protected PDFs are not supported.")
                 if pdf.page_count == 0:
                     raise QwenOCRInputError("The uploaded PDF contains no pages.")
                 if pdf.page_count > self._max_pdf_pages:
                     raise QwenOCRInputError(
-                        f"PDF exceeds the {_max_pdf_pages}-page OCR limit."
+                        f"PDF exceeds the {self._max_pdf_pages}-page OCR limit."
                     )
                 pages = (
                     Image.open(
                         io.BytesIO(
                             page.get_pixmap(
-                                matrix=fitz.Matrix(2, 2), alpha=False
+                                matrix=pymupdf.Matrix(2, 2), alpha=False
                             ).tobytes("png")
                         )
                     )
@@ -265,11 +281,15 @@ class QwenVisionOCRProvider(BaseOCRProvider):
             except (OSError, ValueError) as exc:
                 raise QwenOCRInputError("The uploaded image could not be opened.") from exc
             with image:
+                try:
+                    rgb_image = image.convert("RGB")
+                except (OSError, ValueError) as exc:
+                    raise QwenOCRInputError("The uploaded image could not be decoded.") from exc
                 with self._inference_lock:
                     self._load_model()
                     if buffer_seconds:
                         time.sleep(buffer_seconds)
-                    page_texts.append(self._infer_image(image.convert("RGB")))
+                    page_texts.append(self._infer_image(rgb_image))
 
         return {
             "provider": "qwen2.5-vl",

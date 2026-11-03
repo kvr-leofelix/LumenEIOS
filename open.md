@@ -42,7 +42,7 @@ Proceed only if the check reports `True` and prints the NVIDIA GPU name. Start t
 python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-In a separate terminal, start the frontend with `npm run dev`, open the printed URL, sign in with a demo teacher account, and open **Teacher → Scan Review**. Upload one or more JPG, PNG, or PDF files and select **Run OCR**. The first run downloads the Qwen model and may take a while. Extracted text appears below the upload area. OCR preview does not grade or publish marks.
+In a separate terminal, start the frontend with `npm run dev`, open the printed URL, click **Teacher** under **Switch Persona**, and open **Scan Review** in the sidebar. Upload one or more JPG, PNG, or PDF files and select **Run OCR**. The first run downloads the Qwen model and may take a while. Extracted text appears below the upload area. OCR preview does not grade or publish marks.
 
 If CUDA is not detected, or model loading fails, check the displayed backend error and install the matching CUDA PyTorch build; do not install CPU-only PyTorch for this test. More details: [README.md](README.md#optional-qwen-ocr-developer-mode-cuda).
 

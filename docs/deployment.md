@@ -58,7 +58,6 @@ docker-compose up -d --build
 | `DATABASE_URL` | `sqlite+aiosqlite:///./lumeneios.db` | SQLAlchemy connection URI. |
 | `SECRET_KEY` | `(32-char string)` | Secret key used for signing JWT tokens. |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `120` | JWT expiration duration in minutes. |
-| `ACTIVE_OCR_PROVIDER` | `simulated` | OCR engine (`simulated`, `huggingface`, `trocr`, `paddleocr`). |
 | `DEMO_MODE` | `true` | Allows instant demo switching across the 5 fictional personas. |
 
 ---
