@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import os
 from pathlib import Path
 import uuid
 from typing import List, Optional
@@ -52,6 +54,10 @@ from backend.app.services.batch_grading_service import (
 )
 
 router = APIRouter(prefix="/ocr", tags=["OCR & Human Review"])
+logger = logging.getLogger(__name__)
+
+OCR_PREVIEW_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
+OCR_PREVIEW_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "application/pdf"}
 
 
 class ProcessOCRRequest(BaseModel):
@@ -73,12 +79,22 @@ async def extract_ocr_preview(
     provider = get_ocr_provider("qwen")
     results = []
     for file in files:
+        extension = os.path.splitext((file.filename or "").lower())[1]
+        if (
+            extension not in OCR_PREVIEW_EXTENSIONS
+            and (file.content_type or "").lower() not in OCR_PREVIEW_MIME_TYPES
+        ):
+            raise HTTPException(
+                status_code=415,
+                detail=f"Unsupported OCR file '{file.filename}'. Upload JPG, PNG, or PDF.",
+            )
+
         detail = await storage_service.save_upload_detailed(file)
         if not detail["valid"]:
             raise HTTPException(status_code=400, detail=detail["error"])
 
         try:
-            if detail["mime_type"] not in {"image/jpeg", "image/png", "application/pdf"}:
+            if detail["mime_type"] not in OCR_PREVIEW_MIME_TYPES:
                 raise HTTPException(
                     status_code=415,
                     detail=f"Unsupported OCR file '{detail['file_name']}'. Upload JPG, PNG, or PDF.",
@@ -101,6 +117,15 @@ async def extract_ocr_preview(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except QwenOCRInferenceError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # An unhandled error would bypass CORS and reach the browser as "Failed to fetch".
+            logger.exception("OCR preview failed for %s", detail["file_name"])
+            raise HTTPException(
+                status_code=500,
+                detail=f"OCR failed for '{detail['file_name']}'; check backend logs.",
+            ) from exc
         finally:
             Path(detail["storage_path"]).unlink(missing_ok=True)
 
@@ -117,6 +142,12 @@ async def process_ocr(
     db: AsyncSession = Depends(get_db),
     educator: User = Depends(require_roles("admin", "principal", "teacher")),
 ):
+    if req.provider == "qwen":
+        raise HTTPException(
+            status_code=400,
+            detail="Qwen returns text only, without answer regions. Use POST /ocr/extract-preview.",
+        )
+
     doc_res = await db.execute(select(Document).filter(Document.id == req.document_id))
     doc = doc_res.scalars().first()
     if not doc:

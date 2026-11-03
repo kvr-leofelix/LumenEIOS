@@ -1,3 +1,11 @@
+import os
+import tempfile
+
+# Must be set before the app is imported so tests never touch lumeneios.db or storage_uploads/.
+_test_dir = tempfile.mkdtemp(prefix="lumeneios-tests-")
+os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_test_dir}/test.db"
+os.environ["STORAGE_LOCAL_DIR"] = f"{_test_dir}/uploads"
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport

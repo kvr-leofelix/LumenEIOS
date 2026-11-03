@@ -55,10 +55,10 @@ export const Sidebar: React.FC = () => {
             badge: 'AI',
           },
           {
-            label: 'Auto-Grade & OCR',
+            label: 'Scan Review',
             path: '/teacher/scan-review',
             icon: <ScanLine className="w-4 h-4" />,
-            badge: 'Batch',
+            badge: 'OCR',
           },
           { label: 'Audit & Security', path: '/admin/audit-logs', icon: <ShieldCheck className="w-4 h-4" /> },
         ];
@@ -83,10 +83,10 @@ export const Sidebar: React.FC = () => {
             badge: 'AI',
           },
           {
-            label: 'Auto-Grade & OCR',
+            label: 'Scan Review',
             path: '/teacher/scan-review',
             icon: <ScanLine className="w-4 h-4" />,
-            badge: 'Batch',
+            badge: 'OCR',
           },
           { label: 'Compliance Reports', path: '/principal/reports', icon: <FileSpreadsheet className="w-4 h-4" /> },
         ];
@@ -111,10 +111,10 @@ export const Sidebar: React.FC = () => {
           },
           { label: 'Differentiated Homework', path: '/teacher/remediation', icon: <Sparkles className="w-4 h-4" /> },
           {
-            label: 'Auto-Grade & OCR',
+            label: 'Scan Review',
             path: '/teacher/scan-review',
             icon: <ScanLine className="w-4 h-4" />,
-            badge: 'Batch',
+            badge: 'OCR',
           },
         ];
 
