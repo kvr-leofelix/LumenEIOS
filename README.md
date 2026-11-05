@@ -151,6 +151,8 @@ The backend is implemented using **Python FastAPI** and **SQLAlchemy 2.x (Async)
 - Node.js (v18+) and npm
 - Python 3.12+ (or 3.15)
 
+On Windows, run `run.bat` from the project folder to start the backend/API and frontend. It installs the regular app dependencies if needed. The Qwen model loads on the first OCR request and requires the optional CUDA setup below.
+
 ### 8.1 Backend Setup
 ```bash
 # 1. Install backend dependencies
@@ -165,7 +167,7 @@ python -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 
 #### Optional: Qwen OCR developer mode (CUDA)
 
-The OCR preview runs in the FastAPI backend, not in the browser. During development, run the backend on the laptop with its CUDA-capable GPU; production runs the same model in the backend server process.
+The OCR preview runs in the FastAPI backend, not in the browser. The model loads when an OCR request uses Qwen. During development, run the backend on the laptop with its CUDA-capable GPU; production runs the same model in the backend server process.
 
 1. Install a CUDA-enabled PyTorch build compatible with the laptop's GPU and driver using the [PyTorch install selector](https://pytorch.org/get-started/locally/).
 2. Install the optional OCR packages:
