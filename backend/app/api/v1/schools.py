@@ -3,12 +3,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.dependencies import get_current_user, require_roles
+from backend.app.api.dependencies import (
+    get_current_user,
+    require_bearer_token,
+    require_roles,
+    require_school_access,
+    user_school_ids,
+)
 from backend.app.db.session import get_db
 from backend.app.models.entities import School, ClassSection, User, AuditEvent, utc_now
 from backend.app.schemas.schools import SchoolOut, SchoolCreate, SchoolUpdate, ClassSectionOut
 
-router = APIRouter(prefix="/schools", tags=["Schools"])
+router = APIRouter(prefix="/schools", tags=["Schools"], dependencies=[Depends(require_bearer_token)])
 
 
 @router.get("", response_model=List[SchoolOut])
@@ -19,6 +25,8 @@ async def list_schools(
     current_user: User = Depends(get_current_user)
 ):
     query = select(School).filter(School.is_archived == False)
+    if current_user.role != "admin":
+        query = query.filter(School.id.in_(await user_school_ids(db, current_user)))
     if tier and tier != "all":
         query = query.filter(School.infrastructure_tier == tier)
     if search:
@@ -53,6 +61,7 @@ async def create_school(
 
 @router.get("/{school_id}", response_model=SchoolOut)
 async def get_school(school_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    await require_school_access(db, current_user, school_id)
     result = await db.execute(select(School).filter(School.id == school_id))
     school = result.scalars().first()
     if not school:
@@ -67,6 +76,7 @@ async def update_school(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_roles("admin", "principal"))
 ):
+    await require_school_access(db, admin, school_id)
     result = await db.execute(select(School).filter(School.id == school_id))
     school = result.scalars().first()
     if not school:
@@ -101,6 +111,7 @@ async def list_school_classes(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    await require_school_access(db, current_user, school_id)
     result = await db.execute(select(ClassSection).filter(ClassSection.school_id == school_id))
     return result.scalars().all()
 

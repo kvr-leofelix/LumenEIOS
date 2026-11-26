@@ -420,13 +420,13 @@ async def process_single_batch_item(
                 await session.commit()
 
         except Exception as exc:
-            logger.exception("Error processing batch item %s: %s", item_id, exc)
+            logger.error("Batch item processing failed (%s).", type(exc).__name__)
             async with AsyncSessionLocal() as session:
                 item_res = await session.execute(select(GradingBatchItem).filter(GradingBatchItem.id == item_id))
                 item = item_res.scalars().first()
                 if item:
                     item.status = "failed"
-                    item.error_message = f"Processing error: {str(exc)}"
+                    item.error_message = "Processing failed. Retry or contact an administrator."
                     await session.commit()
 
         await recalculate_batch_counters(batch_id)

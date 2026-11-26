@@ -1,0 +1,302 @@
+/*
+ * Analytics platform interface. Selected from the theme menu.
+ * The current and presentation interfaces are unchanged.
+ */
+
+html[data-ui='analytics'] {
+  --chrome-navy-50: 248 250 252;
+  --chrome-navy-100: 241 245 249;
+  --chrome-navy-200: 226 232 240;
+  --chrome-navy-300: 203 213 225;
+  --chrome-navy-400: 148 163 184;
+  --chrome-navy-500: 71 85 105;
+  --chrome-navy-600: 51 65 85;
+  --chrome-navy-700: 30 58 138;
+  --chrome-navy-800: 30 58 138;
+  --chrome-navy-900: 23 37 84;
+  --chrome-navy-950: 15 23 42;
+  --ink-navy-50: 248 250 252;
+  --ink-navy-100: 241 245 249;
+  --ink-navy-200: 226 232 240;
+  --ink-navy-300: 148 163 184;
+  --ink-navy-400: 100 116 139;
+  --ink-navy-500: 71 85 105;
+  --ink-navy-600: 51 65 85;
+  --ink-navy-700: 30 41 59;
+  --ink-navy-800: 15 23 42;
+  --ink-navy-900: 15 23 42;
+  --ink-navy-950: 15 23 42;
+
+  --bg-teal-50: 239 246 255;
+  --bg-teal-100: 219 234 254;
+  --bg-teal-200: 191 219 254;
+  --bg-teal-300: 147 197 253;
+  --bg-teal-400: 96 165 250;
+  --bg-teal-500: 37 99 235;
+  --bg-teal-600: 30 58 138;
+  --bg-teal-700: 30 58 138;
+  --bg-teal-800: 23 37 84;
+  --bg-teal-900: 23 37 84;
+  --ink-teal-50: 239 246 255;
+  --ink-teal-100: 219 234 254;
+  --ink-teal-200: 147 197 253;
+  --ink-teal-300: 147 197 253;
+  --ink-teal-400: 191 219 254;
+  --ink-teal-500: 37 99 235;
+  --ink-teal-600: 30 58 138;
+  --ink-teal-700: 30 58 138;
+  --ink-teal-800: 23 37 84;
+  --ink-teal-900: 23 37 84;
+
+  --surface-bg: 248 250 252;
+  --surface-card: 255 255 255;
+  --surface-border: 226 232 240;
+  --surface-border-hover: 203 213 225;
+  --content-primary: 15 23 42;
+  --content-secondary: 71 85 105;
+  --content-muted: 100 116 139;
+  color-scheme: light;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-ui='analytics'] .font-bold,
+html[data-ui='analytics'] .font-extrabold,
+html[data-ui='analytics'] .font-black {
+  font-weight: 600;
+}
+
+html[data-ui='analytics'] .font-medium {
+  font-weight: 500;
+}
+
+html[data-ui='analytics'] .font-normal {
+  font-weight: 400;
+}
+
+html[data-ui='analytics'] .shadow-subtle,
+html[data-ui='analytics'] .shadow-card,
+html[data-ui='analytics'] .shadow-sm,
+html[data-ui='analytics'] .shadow-modal {
+  box-shadow: none;
+}
+
+html[data-ui='analytics'] .rounded-xl,
+html[data-ui='analytics'] .rounded-2xl {
+  border-radius: 8px;
+}
+
+html[data-ui='analytics'] button,
+html[data-ui='analytics'] input,
+html[data-ui='analytics'] select,
+html[data-ui='analytics'] textarea {
+  border-radius: 6px;
+}
+
+html[data-ui='analytics'] .rounded-full,
+html[data-ui='analytics'] button.rounded-full {
+  border-radius: 999px;
+}
+
+html[data-ui='analytics'] .bg-white,
+html[data-ui='analytics'] .bg-surface-card {
+  border-color: #e2e8f0;
+}
+
+html[data-ui='analytics'] aside {
+  background: #ffffff;
+  color: #475569;
+  border-right: 1px solid #e2e8f0;
+  overflow: visible;
+}
+
+html[data-ui='analytics'] aside[data-collapsed='true'] {
+  width: 72px;
+}
+
+html[data-ui='analytics'] aside svg {
+  stroke-width: 1.5;
+}
+
+html[data-ui='analytics'] aside .bg-navy-800,
+html[data-ui='analytics'] aside .bg-navy-900\/60,
+html[data-ui='analytics'] aside .border-navy-700,
+html[data-ui='analytics'] aside .border-navy-700\/60,
+html[data-ui='analytics'] aside .border-navy-700\/40 {
+  background-color: #ffffff;
+  border-color: #e2e8f0;
+}
+
+html[data-ui='analytics'] aside .text-white,
+html[data-ui='analytics'] aside .text-gray-100,
+html[data-ui='analytics'] aside .text-gray-200,
+html[data-ui='analytics'] aside .text-gray-300,
+html[data-ui='analytics'] aside .text-gray-400 {
+  color: #0f172a;
+}
+
+html[data-ui='analytics'] aside .bg-teal-500.text-navy-950 {
+  color: #ffffff;
+  background-color: #1e3a8a;
+}
+
+html[data-ui='analytics'] aside nav a {
+  color: #0f172a;
+  border-radius: 6px;
+}
+
+html[data-ui='analytics'] aside nav a.bg-teal-500,
+html[data-ui='analytics'] aside nav a.bg-teal-500 span,
+html[data-ui='analytics'] aside nav a.bg-teal-500 svg {
+  background-color: #1e3a8a;
+  color: #ffffff;
+}
+
+html[data-ui='analytics'] aside nav a:not(.bg-teal-500):hover {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+html[data-ui='analytics'] header {
+  box-shadow: none;
+  background: #ffffff;
+}
+
+html[data-ui='analytics'] table {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-ui='analytics'] table th,
+html[data-ui='analytics'] table td {
+  border-left-width: 0;
+  border-right-width: 0;
+  height: 52px;
+}
+
+html[data-ui='analytics'] table thead th {
+  height: 40px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+html[data-ui='analytics'] .bg-emerald-50,
+html[data-ui='analytics'] .bg-emerald-100,
+html[data-ui='analytics'] .bg-green-50,
+html[data-ui='analytics'] .bg-green-100 {
+  background-color: #dcfce7;
+}
+
+html[data-ui='analytics'] .text-emerald-600,
+html[data-ui='analytics'] .text-emerald-700,
+html[data-ui='analytics'] .text-emerald-800,
+html[data-ui='analytics'] .text-emerald-900,
+html[data-ui='analytics'] .text-green-700,
+html[data-ui='analytics'] .text-green-800 {
+  color: #166534;
+}
+
+html[data-ui='analytics'] .bg-amber-50,
+html[data-ui='analytics'] .bg-amber-100,
+html[data-ui='analytics'] .bg-yellow-50 {
+  background-color: #fef3c7;
+}
+
+html[data-ui='analytics'] .text-amber-600,
+html[data-ui='analytics'] .text-amber-700,
+html[data-ui='analytics'] .text-amber-800,
+html[data-ui='analytics'] .text-amber-900,
+html[data-ui='analytics'] .text-amber-950 {
+  color: #b45309;
+}
+
+html[data-ui='analytics'] .bg-rose-50,
+html[data-ui='analytics'] .bg-rose-100,
+html[data-ui='analytics'] .bg-red-50,
+html[data-ui='analytics'] .bg-red-100 {
+  background-color: #fee2e2;
+}
+
+html[data-ui='analytics'] .text-rose-600,
+html[data-ui='analytics'] .text-rose-700,
+html[data-ui='analytics'] .text-rose-800,
+html[data-ui='analytics'] .text-rose-900,
+html[data-ui='analytics'] .text-red-700,
+html[data-ui='analytics'] .text-red-800 {
+  color: #b91c1c;
+}
+
+html[data-ui='analytics'] [data-analytics-drawer='true'] {
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0;
+  background: rgb(15 23 42 / 0.28);
+  backdrop-filter: none;
+}
+
+html[data-ui='analytics'] [data-analytics-drawer='true'] > [role='dialog'] {
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  border-radius: 0;
+  border-top: 0;
+  border-bottom: 0;
+  border-right: 0;
+  max-width: 32rem;
+}
+
+@media print {
+  html[data-ui='analytics'] body {
+    background: #ffffff;
+  }
+
+  html[data-ui='analytics'] main {
+    padding: 32px;
+  }
+
+  html[data-ui='analytics'] .rounded-2xl,
+  html[data-ui='analytics'] .rounded-xl {
+    break-inside: avoid;
+  }
+}
+
+/*
+ * Readability fixes (light analytics theme).
+ * The analytics palette maps teal-300/400 to near-white blues and turns every <header> and the
+ * sidebar white, so text that was designed for a dark navy surface vanished ("white on white").
+ */
+
+/* Headers that were navy (e.g. the welcome page) keep a white surface: give their text ink colours. */
+html[data-ui='analytics'] header .text-white:not([class*='bg-']),
+html[data-ui='analytics'] header .text-gray-100,
+html[data-ui='analytics'] header .text-gray-200 {
+  color: #0f172a;
+}
+html[data-ui='analytics'] header .text-navy-100,
+html[data-ui='analytics'] header .text-navy-200,
+html[data-ui='analytics'] header .text-navy-300 {
+  color: #475569;
+}
+
+/* Accent text that relied on a dark background. */
+html[data-ui='analytics'] aside .text-teal-300,
+html[data-ui='analytics'] aside .text-teal-400,
+html[data-ui='analytics'] header .text-teal-300,
+html[data-ui='analytics'] header .text-teal-400 {
+  color: #1e40af;
+}
+html[data-ui='analytics'] aside .bg-teal-500\/10 {
+  background-color: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+/* Sidebar badges (AI, OCR, Demo, VI–VIII): were navy with ink text. */
+html[data-ui='analytics'] aside nav a:not(.bg-teal-500) span.bg-navy-700 {
+  background-color: #e0e7ff;
+  color: #1e3a8a;
+}
+
+/* Icons such as check marks drawn in teal-400 on white cards. */
+html[data-ui='analytics'] main .text-teal-300,
+html[data-ui='analytics'] main .text-teal-400 {
+  color: #2563eb;
+}

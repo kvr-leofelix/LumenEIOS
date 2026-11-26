@@ -65,55 +65,5 @@ def generate_compression_proposal(
     school_id: str,
     class_id: str
 ) -> Tuple[CurriculumProposal, List[CurriculumDay], List[CurriculumDay]]:
-    """
-    Constructs a 60/40 Syllabus Compression proposal.
-    Guarantees 100% of Core Competencies remain protected in live classroom contact hours.
-    """
-    pending_days = [
-        d for d in curriculum_days
-        if d.status in ("pending", "in-progress")
-    ]
-    core_topics = [d for d in pending_days if d.classification == "core"]
-    supp_topics = [d for d in pending_days if d.classification == "supplementary"]
-
-    # Reassign ~65% of pending supplementary topics to flipped homework
-    reassigned_count = min(len(supp_topics), max(6, round(len(supp_topics) * 0.65)))
-    reassigned_topics = supp_topics[:reassigned_count]
-
-    # Integrate a subset via cross-curricular projects
-    integrated_count = min(len(supp_topics) - reassigned_count, 4)
-    integrated_topics = supp_topics[reassigned_count : reassigned_count + integrated_count]
-
-    days_saved = reassigned_count + (integrated_count // 2) + 3
-    original_duration = len(pending_days)
-    revised_duration = max(len(core_topics), original_duration - days_saved)
-
-    proposal = CurriculumProposal(
-        id=f"prop-{uuid.uuid4().hex[:12]}",
-        school_id=school_id,
-        class_id=class_id,
-        version_number=2,
-        original_duration_days=original_duration,
-        revised_duration_days=revised_duration,
-        days_saved=days_saved,
-        topics_preserved_count=len(core_topics),
-        topics_reassigned_count=reassigned_count,
-        topics_integrated_count=integrated_count,
-        status="pending",
-        trade_offs_json=[
-            "100% of NEP 2020 Core Essential Competencies are strictly protected in classroom contact hours.",
-            f"{reassigned_count} exploratory inquiry topics converted to guided flipped homework with parent verification rubrics.",
-            "Cross-curricular synergies with Science and Social Studies recover teaching periods without dropping outcomes.",
-            "Formative exit tickets will verify self-directed topics before final unit summative exams."
-        ],
-        remediation_requirements_json=[
-            "Provide printed scaffolding guides for low-tech students lacking high-speed internet.",
-            "Schedule 15-minute peer mentoring circles for students with Language Understanding (LU) deficits.",
-            "Deploy 5-minute mastery checks at the beginning of each core lesson."
-        ],
-        reassigned_topic_ids=[t.id for t in reassigned_topics],
-        integrated_topic_ids=[t.id for t in integrated_topics]
-    )
-
-    return proposal, reassigned_topics, integrated_topics
-
+    """Legacy curriculum rows lack approved topic-period requirements; never invent them."""
+    raise ValueError("Legacy compression is retired. Use approved topic requirements in the planning workspace.")

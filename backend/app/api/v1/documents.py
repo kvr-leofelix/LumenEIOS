@@ -1,16 +1,19 @@
+from backend.app.api.dependencies import get_current_school_context
+from backend.app.api.record_access import check_school
+from backend.app.api.dependencies import require_bearer_token
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.dependencies import get_current_user, require_roles
+from backend.app.api.dependencies import get_current_user, require_roles, require_school_access
 from backend.app.db.session import get_db
-from backend.app.models.entities import Document, User, AuditEvent, utc_now
+from backend.app.models.entities import Document, OCRRun, GradingBatchItem, User, AuditEvent, utc_now
 from backend.app.schemas.ocr import DocumentOut, BulkDocumentItemResult, BulkDocumentUploadResponse
-from backend.app.services.storage_service import storage_service
+from backend.app.services.storage_service import MAX_FILE_SIZE, storage_service
 
-router = APIRouter(prefix="/documents", tags=["Documents"])
+router = APIRouter(prefix="/documents", tags=["Documents"], dependencies=[Depends(require_bearer_token)])
 
 
 @router.get("", response_model=List[DocumentOut])
@@ -18,11 +21,10 @@ async def list_documents(
     subject_id: Optional[str] = Query(None),
     doc_type: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("admin", "principal", "teacher")),
+    school_id: str = Depends(get_current_school_context),
 ):
-    query = select(Document)
-    if current_user.role != "admin" and current_user.school_id:
-        query = query.filter(Document.school_id == current_user.school_id)
+    query = select(Document).where(Document.school_id == school_id)
     if subject_id:
         query = query.filter((Document.subject_id == subject_id) | (Document.subject_id.is_(None)))
     if doc_type:
@@ -38,6 +40,7 @@ async def upload_document(
     doc_type: str = Form("source_material"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles("admin", "principal", "teacher")),
+    school_id: str = Depends(get_current_school_context),
 ):
     detail = await storage_service.save_upload_detailed(file)
     if not detail["valid"]:
@@ -50,7 +53,7 @@ async def upload_document(
 
     doc = Document(
         id=detail["file_id"],
-        school_id=current_user.school_id or "school-1",
+        school_id=school_id,
         uploader_id=current_user.id,
         subject_id=subject_id,
         doc_type=doc_type,
@@ -79,6 +82,68 @@ async def upload_document(
     return doc
 
 
+@router.post("/studio-pdf-upload", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+async def upload_studio_pdf(
+    file: UploadFile = File(...),
+    subject_id: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "principal", "teacher")),
+    school_id: str = Depends(get_current_school_context),
+):
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only PDF files are allowed.")
+
+    content = await file.read(MAX_FILE_SIZE + 1)
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="PDF exceeds the 15 MB maximum size limit.",
+        )
+    if not content.startswith(b"%PDF-"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The uploaded file is not a valid PDF.")
+
+    try:
+        import pymupdf
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PDF validation is unavailable. Install backend/requirements.txt.",
+        ) from exc
+    try:
+        with pymupdf.open(stream=content, filetype="pdf") as pdf:
+            if pdf.needs_pass:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Password-protected PDFs are not supported.",
+                )
+            if pdf.page_count == 0 or pdf.page_count > 25:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="PDFs must contain between 1 and 25 pages.",
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The uploaded PDF could not be opened.",
+        ) from exc
+
+    # The same chapter uploaded again (same school and subject) reuses the stored copy instead of listing it twice.
+    import hashlib
+    digest = hashlib.sha256(content).hexdigest()
+    existing = (await db.execute(select(Document).filter(
+        Document.school_id == school_id, Document.content_hash == digest,
+        Document.subject_id == subject_id, Document.doc_type == "source_material",
+    ).order_by(Document.created_at))).scalars().first()
+    if existing is not None:
+        return existing
+
+    await file.seek(0)
+    # Call the shared upload helper directly (not via FastAPI DI), so school_id must be passed in.
+    return await upload_document(file, subject_id, "source_material", db, current_user, school_id)
+
+
 @router.post("/bulk-upload", response_model=BulkDocumentUploadResponse)
 async def bulk_upload_documents(
     files: List[UploadFile] = File(...),
@@ -86,6 +151,7 @@ async def bulk_upload_documents(
     doc_type: str = Form("source_material"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles("admin", "principal", "teacher")),
+    school_id: str = Depends(get_current_school_context),
 ):
     """
     Uploads multiple source documents in one operation.
@@ -97,7 +163,6 @@ async def bulk_upload_documents(
             detail="Maximum batch size is 50 files per bulk upload.",
         )
 
-    school_id = current_user.school_id or "school-1"
     existing_res = await db.execute(select(Document).filter(Document.school_id == school_id))
     existing_docs = list(existing_res.scalars().all())
     existing_hashes = {d.content_hash: d for d in existing_docs if d.content_hash}
@@ -202,9 +267,10 @@ async def bulk_upload_documents(
 async def get_document_metadata(
     document_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("admin", "principal", "teacher")),
+    school_id: str = Depends(get_current_school_context),
 ):
-    res = await db.execute(select(Document).filter(Document.id == document_id))
+    res = await db.execute(select(Document).filter(Document.id == document_id, Document.school_id == school_id))
     doc = res.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
@@ -216,11 +282,15 @@ async def delete_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles("admin", "principal", "teacher")),
+    school_id: str = Depends(get_current_school_context),
 ):
-    res = await db.execute(select(Document).filter(Document.id == document_id))
+    res = await db.execute(select(Document).filter(Document.id == document_id, Document.school_id == school_id))
     doc = res.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
+    if ((await db.execute(select(OCRRun.id).where(OCRRun.document_id == doc.id).limit(1))).first()
+            or (await db.execute(select(GradingBatchItem.id).where(GradingBatchItem.document_id == doc.id).limit(1))).first()):
+        raise HTTPException(status_code=409, detail="Document is referenced by OCR or grading records.")
     await db.delete(doc)
     await db.commit()
     return {"status": "deleted", "id": document_id}
@@ -230,12 +300,14 @@ async def delete_document(
 async def download_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("admin", "principal", "teacher")),
+    school_id: str = Depends(get_current_school_context),
 ):
-    res = await db.execute(select(Document).filter(Document.id == document_id))
+    res = await db.execute(select(Document).filter(Document.id == document_id, Document.school_id == school_id))
     doc = res.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
+    await require_school_access(db, current_user, doc.school_id)
     file_path = storage_service.get_file_path(doc.storage_path)
     return FileResponse(file_path, media_type=doc.mime_type, filename=doc.file_name)

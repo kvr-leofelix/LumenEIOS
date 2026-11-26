@@ -40,6 +40,11 @@ export interface PacingMetrics {
   riskLabel: string;
 }
 
+/**
+ * Legacy seed-data pacing (CurriculumDay / lostTeachingDays).
+ * Authoritative instructional progress for Classes VI–VIII Mathematics & Science
+ * lives in `lib/planning/progress.ts` (planProgress / workspaceProgress).
+ */
 export function calculateTimeAwarePacing(
   curriculum: CurriculumDay[],
   lostDaysList: LostTeachingDay[],
@@ -100,50 +105,9 @@ export interface CompressionPlanProposal {
   remediationRequirements: string[];
 }
 
-export function generateSyllabusCompressionPlan(
-  curriculum: CurriculumDay[],
-  lostDaysCount: number
-): CompressionPlanProposal {
-  const pendingDays = curriculum.filter(
-    (d) => d.status === 'pending' || d.status === 'in-progress'
-  );
-  const coreTopics = pendingDays.filter((d) => d.classification === 'core');
-  const suppTopics = pendingDays.filter((d) => d.classification === 'supplementary');
-
-  // We reassign ~60% of pending supplementary topics to flipped homework / self-guided reading
-  const reassignedCount = Math.min(suppTopics.length, Math.max(8, Math.round(suppTopics.length * 0.65)));
-  const reassignedTopics = suppTopics.slice(0, reassignedCount);
-
-  // We integrate remaining supplementary topics via cross-curricular projects
-  const integratedCount = Math.min(suppTopics.length - reassignedCount, 4);
-  const integratedTopics = suppTopics.slice(reassignedCount, reassignedCount + integratedCount);
-
-  const daysSaved = reassignedCount + Math.floor(integratedCount * 0.5) + 3; // + cross-curricular savings
-  const originalDurationDays = pendingDays.length;
-  const revisedDurationDays = originalDurationDays - daysSaved;
-
-  return {
-    originalDurationDays,
-    revisedDurationDays,
-    daysSaved,
-    topicsPreservedCount: coreTopics.length,
-    topicsReassignedCount: reassignedCount,
-    topicsIntegratedCount: integratedCount,
-    reassignedTopics,
-    integratedTopics,
-    preservedCoreCount: coreTopics.length,
-    tradeOffAnalysis: [
-      '100% of NEP 2020 Core Essential Competencies are strictly protected in classroom contact hours.',
-      `${reassignedCount} exploratory inquiry topics converted to guided flipped homework with parent verification rubrics.`,
-      'Cross-curricular synergies with Science and Social Studies recover 5 teaching periods without dropping outcomes.',
-      'Formative exit tickets will verify self-directed topics before final unit summative exams.',
-    ],
-    remediationRequirements: [
-      'Provide printed scaffolding guides for low-tech students lacking high-speed internet.',
-      'Schedule 15-minute peer mentoring circles for students with Language Understanding (LU) deficits.',
-      'Deploy 5-minute mastery checks at the beginning of each core lesson.',
-    ],
-  };
+/** Legacy callers must use the approved planning workspace allocator. */
+export function generateSyllabusCompressionPlan(_curriculum: CurriculumDay[], _lostDaysCount: number): CompressionPlanProposal {
+  throw new Error('Legacy compression is retired. Use approved topic requirements in the Time-Aware Engine.');
 }
 
 export function recommendDifferentiatedHomework(student: Student) {

@@ -1,9 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
+import { apiClient } from '../../lib/apiClient';
+import type { NotificationItem, School } from '../../types';
+import { ANNOUNCEMENT_COLOR } from '../../features/announcements/announcementsModel';
 import {
   Bell,
+  Megaphone,
   Search,
   Building2,
   ChevronDown,
@@ -14,10 +18,15 @@ import {
   ExternalLink,
   ShieldAlert,
 } from 'lucide-react';
+import { getRoleLabel } from '../../lib/permissions';
+import { useTheme } from '../../context/ThemeContext';
 import { Badge } from '../common/Badge';
+import { ThemeMenu } from './ThemeMenu';
+import { FontSizeControl } from './FontSizeControl';
 
 export const Topbar: React.FC = () => {
   const { currentUser, currentSchoolId, switchSchool, logout } = useAuth();
+  const { uiMode } = useTheme();
   const { schools, notifications, markNotificationAsRead, resetDemoData } = useData();
   const navigate = useNavigate();
 
@@ -25,10 +34,57 @@ export const Topbar: React.FC = () => {
   const [showNotifMenu, setShowNotifMenu] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  const currentSchool = schools.find((s) => s.id === currentSchoolId) || schools[0];
-  const userNotifications = notifications.filter(
-    (n) => !currentUser || n.userId === currentUser.id || n.userId === 'user-active'
-  );
+  const localSchool = schools.find((s) => s.id === currentSchoolId);
+  const [loadedSchool, setLoadedSchool] = useState<Pick<School, 'id' | 'name' | 'state' | 'infrastructureTier'>>();
+  const currentSchool = localSchool || (loadedSchool?.id === currentSchoolId ? loadedSchool : undefined);
+
+  useEffect(() => {
+    if (localSchool) return;
+    let active = true;
+    apiClient.schools.getById(currentSchoolId).then((school) => {
+      if (active) setLoadedSchool({
+        id: school.id,
+        name: school.name,
+        state: school.state,
+        infrastructureTier: school.infrastructure_tier,
+      });
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [currentSchoolId, localSchool]);
+  // Announcement notifications come from the server (the rest of the bell is the offline demo's local list).
+  const [remote, setRemote] = useState<NotificationItem[]>([]);
+  useEffect(() => {
+    if (!currentUser) return;
+    let active = true;
+    const load = () => apiClient.notifications.getAll().then((rows: any[]) => {
+      if (!active) return;
+      setRemote(rows.filter((r) => r.type === 'announcement').map((r) => ({
+        id: r.id, userId: r.user_id, title: r.title, message: r.message, type: 'announcement' as const, read: !!r.is_read,
+        createdAt: r.created_at ? new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(r.created_at) ? r.created_at : `${r.created_at}Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '',
+        link: r.link || undefined,
+      })));
+    }).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 60000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [currentUser?.id]);
+  const remoteIds = new Set(remote.map((n) => n.id));
+  const userNotifications = [
+    ...remote,
+    ...notifications.filter((n) => !currentUser || n.userId === currentUser.id || n.userId === 'user-active'),
+  ];
+  const openNotification = (notif: NotificationItem) => {
+    if (remoteIds.has(notif.id)) {
+      setRemote((prev) => prev.map((n) => (n.id === notif.id ? { ...n, read: true } : n)));
+      apiClient.notifications.markRead(notif.id).catch(() => undefined);
+    } else {
+      markNotificationAsRead(notif.id);
+    }
+    if (notif.link) {
+      navigate(notif.link);
+      setShowNotifMenu(false);
+    }
+  };
   const unreadCount = userNotifications.filter((n) => !n.read).length;
 
   const handleResetData = () => {
@@ -53,12 +109,12 @@ export const Topbar: React.FC = () => {
             <div className="hidden sm:block">
               <div className="flex items-center gap-1.5">
                 <span className="font-semibold text-content-primary leading-tight line-clamp-1 max-w-[190px]">
-                  {currentSchool?.name}
+                  {currentSchool?.name || 'Active campus'}
                 </span>
                 <ChevronDown className="w-3.5 h-3.5 text-content-secondary" />
               </div>
               <span className="text-[11px] text-content-secondary">
-                {currentSchool?.state} • {currentSchool?.infrastructureTier}
+                {currentSchool && `${currentSchool.state} • ${currentSchool.infrastructureTier}`}
               </span>
             </div>
           </button>
@@ -72,8 +128,12 @@ export const Topbar: React.FC = () => {
                 {schools.map((sch) => (
                   <button
                     key={sch.id}
-                    onClick={() => {
-                      switchSchool(sch.id);
+                    onClick={async () => {
+                      try {
+                        await switchSchool(sch.id);
+                      } catch {
+                        window.alert('Could not switch to that school.');
+                      }
                       setShowSchoolMenu(false);
                     }}
                     className={`w-full px-3.5 py-2 text-left text-xs hover:bg-surface-bg flex items-center justify-between transition-colors ${
@@ -96,22 +156,36 @@ export const Topbar: React.FC = () => {
           )}
         </div>
 
-        {/* NEP 2020 Compliance Indicator */}
-        <Badge variant="teal" size="sm" className="hidden lg:inline-flex">
-          NEP 2020 Pedagogical Engine
-        </Badge>
+        {uiMode === 'analytics' ? (
+          <>
+            <span className="hidden md:inline-flex items-center px-2.5 py-1 rounded-full border border-surface-border bg-white text-[11px] font-medium text-navy-800">
+              {getRoleLabel(currentUser?.role)} view
+            </span>
+            <span className="hidden lg:inline-flex items-center px-2.5 py-1 rounded-md border border-surface-border text-[11px] font-medium text-content-secondary">
+              Term {localSchool?.academicYear || '2026–2027'}
+            </span>
+          </>
+        ) : (
+          <Badge variant="teal" size="sm" className="hidden lg:inline-flex">
+            NEP 2020 Pedagogical Engine
+          </Badge>
+        )}
       </div>
 
       {/* Right Controls: Notifications, Reset Demo Data, User Profile */}
-      <div className="flex items-center gap-2.5">
+      <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5">
+        <FontSizeControl />
+        <ThemeMenu />
+
         {/* Reset Demo Data Pill */}
         <button
           onClick={handleResetData}
           title="Reset LocalStorage demo data to clean baseline"
-          className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-content-secondary hover:text-navy-800 hover:bg-surface-bg border border-surface-border rounded-lg transition-colors"
+          aria-label="Reset Demo Data"
+          className="flex shrink-0 items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-content-secondary hover:text-navy-800 hover:bg-surface-bg border border-surface-border rounded-lg transition-colors"
         >
           <RotateCcw className="w-3.5 h-3.5 text-content-muted" />
-          <span>Reset Demo Data</span>
+          <span className="hidden lg:inline">Reset Demo Data</span>
         </button>
 
         {/* Notifications Dropdown */}
@@ -144,19 +218,17 @@ export const Topbar: React.FC = () => {
                   userNotifications.map((notif) => (
                     <div
                       key={notif.id}
-                      onClick={() => {
-                        markNotificationAsRead(notif.id);
-                        if (notif.link) {
-                          navigate(notif.link);
-                          setShowNotifMenu(false);
-                        }
-                      }}
+                      onClick={() => openNotification(notif)}
                       className={`p-3 text-xs cursor-pointer hover:bg-surface-bg transition-colors ${
                         !notif.read ? 'bg-teal-50/30' : ''
                       }`}
+                      style={notif.type === 'announcement' ? { borderLeft: `4px solid ${ANNOUNCEMENT_COLOR}` } : undefined}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <span className="font-semibold text-content-primary">{notif.title}</span>
+                        <span className="font-semibold text-content-primary">
+                          {notif.type === 'announcement' && <Megaphone className="mr-1 inline h-3 w-3" style={{ color: ANNOUNCEMENT_COLOR }} aria-label="Announcement" />}
+                          {notif.title}
+                        </span>
                         <span className="text-[10px] text-content-muted shrink-0">{notif.createdAt}</span>
                       </div>
                       <p className="text-content-secondary mt-1 text-[11px] leading-relaxed">
@@ -187,8 +259,8 @@ export const Topbar: React.FC = () => {
               <div className="text-xs font-semibold text-content-primary leading-tight">
                 {currentUser?.name}
               </div>
-              <div className="text-[10px] text-teal-600 font-medium capitalize">
-                {currentUser?.role}
+              <div className="text-[10px] text-teal-600 font-medium">
+                {getRoleLabel(currentUser?.role)}
               </div>
             </div>
             <ChevronDown className="w-3.5 h-3.5 text-content-secondary" />
@@ -201,7 +273,7 @@ export const Topbar: React.FC = () => {
                 <p className="text-[11px] text-content-secondary truncate">{currentUser?.email}</p>
                 <div className="mt-1.5">
                   <Badge variant="teal" size="sm">
-                    Role: {currentUser?.role}
+                    Role: {getRoleLabel(currentUser?.role)}
                   </Badge>
                 </div>
               </div>

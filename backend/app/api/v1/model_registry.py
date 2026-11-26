@@ -1,3 +1,4 @@
+from backend.app.api.dependencies import require_bearer_token
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -13,7 +14,7 @@ from backend.app.schemas.model_registry import (
 )
 from backend.app.services.model_training_service import check_model_promotion_criteria
 
-router = APIRouter(prefix="/model-registry", tags=["OCR Model Registry & Training"])
+router = APIRouter(prefix="/model-registry", tags=["OCR Model Registry & Training"], dependencies=[Depends(require_bearer_token)])
 
 
 @router.get("/evaluations", response_model=List[ModelEvaluationOut])

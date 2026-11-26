@@ -4,7 +4,6 @@ from backend.app.schemas.common import BaseSchema
 
 
 class CalculatePacingRequest(BaseModel):
-    core_ratio: float = 0.60
     current_day: int = 104
     total_official_days: int = 180
 

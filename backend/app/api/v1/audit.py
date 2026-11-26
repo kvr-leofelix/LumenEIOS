@@ -1,3 +1,4 @@
+from backend.app.api.dependencies import require_bearer_token
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -8,7 +9,7 @@ from backend.app.db.session import get_db
 from backend.app.models.entities import AuditEvent, User
 from backend.app.schemas.common import AuditEventOut
 
-router = APIRouter(prefix="/audit", tags=["Audit & Security"])
+router = APIRouter(prefix="/audit", tags=["Audit & Security"], dependencies=[Depends(require_bearer_token)])
 
 
 @router.get("/events", response_model=List[AuditEventOut])

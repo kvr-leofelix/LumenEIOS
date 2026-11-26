@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LumenEIOS Demo Script</title>
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 15mm 15mm 14mm 15mm; }
+  :root { --navy:#142A43; --teal:#16A085; --ink:#1d2430; --muted:#6b7280; --soft:#eef6f3; --line:#e5e7eb; --amber:#b45309; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Inter, "DejaVu Sans", Arial, sans-serif; color: var(--ink); background:#fff; font-size: 10pt; }
+  .serif { font-family: Lora, "DejaVu Serif", Georgia, serif; }
+  .cover { border-bottom: 3px solid var(--teal); padding-bottom: 10px; margin-bottom: 12px; }
+  .kicker { font-size: 9pt; letter-spacing: .12em; text-transform: uppercase; color: var(--teal); font-weight:700; }
+  h1 { color: var(--navy); font-size: 22pt; margin: 4px 0 4px; }
+  h2 { color: var(--navy); font-size: 13.5pt; margin: 16px 0 6px; }
+  h3 { color: var(--navy); font-size: 11pt; margin: 10px 0 4px; }
+  p { line-height: 1.5; margin: 0 0 8px; }
+  .meta { color: var(--muted); font-size: 9pt; }
+  ul, ol { margin: 0 0 8px 18px; padding: 0; }
+  li { line-height: 1.5; margin-bottom: 3px; }
+  table { border-collapse: collapse; width: 100%; }
+  .tbl td, .tbl th { border-bottom: 1px solid var(--line); padding: 5px 6px; text-align: left; vertical-align: top; font-size: 9.5pt; }
+  .tbl th { color: var(--navy); background: #f7f9fb; }
+  code { font-family: "DejaVu Sans Mono", monospace; font-size: 8.8pt; background: #f3f4f6; padding: 0 3px; border-radius: 3px; }
+  .legend { display:flex; gap:14px; flex-wrap: wrap; font-size: 9pt; margin: 6px 0 10px; }
+  .tag { display:inline-block; font-size: 7.5pt; font-weight:700; letter-spacing:.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 3px; }
+  .core { background: var(--teal); color: #fff; }
+  .opt { background: #fde68a; color: #78350f; }
+
+  .act { page-break-before: always; }
+  .act-head { background: var(--navy); color:#fff; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; }
+  .act-head .kicker { color: #7fe0c6; }
+  .act-head h2 { color:#fff; margin: 2px 0 0; font-size: 14pt; }
+  .act-head p { margin: 4px 0 0; color: #d6e2ee; font-size: 9.5pt; }
+
+  .step { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 10px; page-break-inside: avoid; overflow: hidden; }
+  .step-top { display:flex; justify-content: space-between; align-items: baseline; background: var(--soft); padding: 5px 10px; border-bottom: 1px solid var(--line); }
+  .step-top b { color: var(--navy); font-size: 10.5pt; }
+  .step-top span { font-size: 8.5pt; color: var(--muted); }
+  .step-body { display: grid; grid-template-columns: 34% 66%; }
+  .do { padding: 8px 10px; border-right: 1px solid var(--line); background: #fbfcfd; font-size: 9pt; }
+  .do .lbl, .say .lbl { font-size: 7.5pt; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--teal); margin-bottom: 3px; }
+  .do ol { margin-left: 15px; }
+  .do li { margin-bottom: 2px; }
+  .say { padding: 8px 12px; }
+  .say p { font-family: Lora, "DejaVu Serif", Georgia, serif; font-size: 11.5pt; line-height: 1.55; margin-bottom: 7px; }
+  .say strong { color: var(--navy); }
+  .note { font-size: 8.5pt; color: var(--amber); margin-top: 4px; }
+  .pause { font-family: Inter, "DejaVu Sans", sans-serif; font-size: 8.5pt; color: var(--muted); }
+  .quote { border-left: 4px solid var(--teal); background: var(--soft); padding: 8px 12px; margin: 8px 0; }
+  .quote p { font-family: Lora, "DejaVu Serif", Georgia, serif; font-size: 12pt; margin: 0; }
+</style>
+</head>
+<body>
+
+<!-- ============ COVER / PREP ============ -->
+<div class="cover">
+  <div class="kicker">LumenEIOS · Live demonstration script</div>
+  <h1>Following one child's notebook page</h1>
+  <div class="meta">Full version about 18 minutes · short version about 9 minutes (core steps only) · for a laptop or a TV by screen mirroring</div>
+</div>
+
+<h2>How to use this script</h2>
+<p>Every step has two columns. The <b>left column</b> lists what is on screen and what to click. The <b>right column</b> is what to say while the audience watches. You don't need to read it word for word. Say it in your own voice, but keep the key sentences in <b>bold</b>.</p>
+<div class="legend">
+  <span><span class="tag core">Core</span> Always show</span>
+  <span><span class="tag opt">Optional</span> Skip if time is short</span>
+</div>
+
+<h2>The story we tell</h2>
+<p>The opening speech introduced three people: Gurleen, her teacher Ms. Garima, and her mother. The demo shows how LumenEIOS helps each of them, in three acts.</p>
+<table class="tbl">
+  <tr><th style="width:22%">Act</th><th style="width:38%">Problem</th><th>What we show</th></tr>
+  <tr><td><b>1. Lost days</b></td><td>School days are lost and teachers are forced to rush.</td><td>Time-Aware Engine: a lost day is recovered and core learning stays protected.</td></tr>
+  <tr><td><b>2. Invisible gaps</b></td><td>A total mark hides <i>why</i> a child struggles, and families hear about it too late.</td><td>A handwritten worksheet is read by AI, checked by the teacher, and reaches the student and parent in minutes.</td></tr>
+  <tr><td><b>3. Closing the gap</b></td><td>Knowing about a gap is not the same as fixing it.</td><td>Differentiated Homework, LearnSphere (Panchapadi path, Teach-Back, Real-Life Missions).</td></tr>
+</table>
+
+<h2>Before you present (30 minutes earlier)</h2>
+<ol>
+  <li><b>Restart the app</b> so no earlier AI work is still running: <code>stop-lumeneios</code>, then <code>start-lumeneios</code>. Open <code>http://localhost:3000</code>.</li>
+  <li><b>Reset the demo data</b> if you rehearsed with it (this backs up the current data first): <code>.venv/bin/python -m backend.scripts.build_demo_database --fresh</code>, then load the LearnSphere examples with <code>backend.scripts.demo_learnsphere</code>. The second command takes about 15 minutes.</li>
+  <li><b>Warm up the AI model:</b> the first AI request after starting loads the model onto the graphics card and is slow. Sign in as Ms. Garima and ask <b>Ask LumenEIOS</b> (bottom-right button) any question, then wait for the answer. Don't use Gurleen's worksheet for this, because uploading it changes the demo.</li>
+  <li><b>Keep these ready:</b> the sample sheet <code>demo/answer-sheets/gurleen_7-a_science_worksheet.png</code>, and the backup video <code>demo/presentation/LumenEIOS_showcase.mp4</code> in case anything fails.</li>
+  <li><b>Screen setup:</b> browser zoom 110–125% so the TV is readable. Use the text-size button (A) in the top bar if needed. Close other tabs and turn off notifications.</li>
+</ol>
+
+<h3>Accounts (the sign-in page has one-click buttons for all of these)</h3>
+<table class="tbl">
+  <tr><th>Who</th><th>Role in the story</th><th>Username</th><th>Password</th></tr>
+  <tr><td>Ms. Ananya Rao</td><td>Management (whole school network)</td><td><code>ADMIN</code></td><td><code>Admin@123</code></td></tr>
+  <tr><td>Dr. Lakshmi Narayanan</td><td>Principal, Sunrise Public School</td><td><code>SPS-PRINCIPAL</code></td><td><code>Principal@123</code></td></tr>
+  <tr><td>Ms. Garima Sharma</td><td>Science teacher, class teacher of 7-A</td><td><code>garima.sharma@sps.lumeneios.demo</code></td><td><code>Teacher@123</code></td></tr>
+  <tr><td>Gurleen Kaur</td><td>Student, Class 7-A (our main character)</td><td><code>SPS25047</code></td><td><code>14022013</code></td></tr>
+  <tr><td>Harpreet Kaur</td><td>Gurleen's parent</td><td><code>9701577369</code></td><td><code>Parent@123</code></td></tr>
+</table>
+<p class="meta" style="margin-top:6px">All people, schools and scores in the demo are fictional.</p>
+
+<!-- ============ PROLOGUE ============ -->
+<div class="act">
+<div class="act-head">
+  <div class="kicker">Prologue · about 2 minutes</div>
+  <h2>From the speech to the screen</h2>
+  <p>Introduce the school and the big picture before going into one classroom.</p>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>0.1 · The sign-in page</b> <span><span class="tag core">Core</span> · 30 s</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>The LumenEIOS sign-in page is already open on the TV.</li><li>Point at the one-click sign-in buttons.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>A minute ago you met Gurleen, Ms. Garima and Gurleen's mother. Now you'll meet them on screen, and see how <strong>each of them gets what they need, in time</strong>.</p>
+      <p>LumenEIOS has five doors: management, principal, teacher, student and parent. <strong>Each person sees only what they need</strong>, so a parent sees only their own child and a teacher sees only their own classes.</p>
+      <p>The school we'll show is made up, but the problems are real.</p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>0.2 · Management: the whole network</b> <span><span class="tag core">Core</span> · 1.5 min · sign in as Ms. Ananya Rao</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Click the <b>Management</b> one-click button.</li><li><b>Platform Overview</b> opens. Point to the two schools side by side.</li><li>Point to the <b>Growth</b> figure on each school card (+7 for Himalayan Vidya Niketan, +4 for Sunrise).</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>This is the view of an education society that runs two schools. <strong>Sunrise Public School</strong> is in Bengaluru, a city school. <strong>Himalayan Vidya Niketan</strong> is in Mandi, in the hills, where monsoon closures take away more school days.</p>
+      <p>Look at the growth since April. The hill school started lower, and it is growing faster: seven points against four. <span class="pause">[pause]</span> <strong>A school with fewer resources can catch up when its teachers can see exactly where to help.</strong> That's what we built this for.</p>
+      <p>Let's step into one classroom: Class 7-A, at Sunrise.</p>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============ ACT 1 ============ -->
+<div class="act">
+<div class="act-head">
+  <div class="kicker">Act 1 · Lost days · about 6 minutes</div>
+  <h2>When a school day is lost, core learning is never cut</h2>
+  <p>Our flagship feature, the Time-Aware Engine. Teacher plans, principal approves, a day is lost, the plan recovers.</p>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>1.1 · Meet the teacher</b> <span><span class="tag core">Core</span> · 1 min · sign in as Ms. Garima Sharma</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Sign out, then click the <b>Teacher</b> button (Ms. Garima).</li><li><b>Teacher Dashboard</b>: point at the class summary and "students needing support".</li><li><span class="tag opt">Optional</span> Open <b>My Classes &amp; Heatmap</b> for a few seconds.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>This is Ms. Garima. She teaches Science and is the class teacher of 7-A. Like every teacher, she has far more work than hours in the day.</p>
+      <p>Notice that we don't show one mark per child. NEP 2020 asks schools to look at <em>how</em> a child understands, so every student has <strong>four learning parameters</strong>:</p>
+      <p><strong>Language</strong>: can they understand the question? <strong>Concept</strong>: do they know why it works? <strong>Application</strong>: can they use it in real life? <strong>Critical Thinking</strong>: can they reason and judge?</p>
+      <p>Two students can both score 60%, but one may be struggling with the <em>language</em> of the question and the other with the <em>idea</em> itself. <strong>They need completely different help.</strong></p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>1.2 · The teacher plans the rest of the year</b> <span><span class="tag core">Core</span> · 1.5 min</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Open <b>Time-Aware Engine</b>.</li><li>Choose <b>Class VII</b> and <b>Science</b>.</li><li>Point at the capacity: days left, periods still to teach, Core and Non-Core. <i>These numbers change with the date, so read them off the screen.</i></li><li>Click <b>Generate draft schedule for approval</b>.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Every teacher in India knows this feeling: it's November, and the question is <em>"Will I finish the syllabus?"</em></p>
+      <p>Here the answer is clear. Ms. Garima has <strong>about ninety teaching days left</strong>. She has taught 43 of 78 topics, and the rest needs around 165 periods.</p>
+      <p>Here's the key idea. Each topic is marked either <strong>Core</strong>, which is foundational and must be taught in class by the teacher, or <strong>Non-Core</strong>, which is enriching and can become guided independent learning if time runs short.</p>
+      <p><span class="pause">[click Generate]</span> With one click, the engine places every remaining period on the school calendar, all the way to March. <strong>It's only a draft. Nothing changes until the principal approves it.</strong></p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>1.3 · The principal approves</b> <span><span class="tag core">Core</span> · 45 s · sign in as Dr. Lakshmi Narayanan</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Sign out, then click <b>Principal</b>.</li><li>Open <b>Planning Oversight</b>.</li><li>Find <i>Draft schedules awaiting approval</i> and click <b>Approve teaching schedule</b>.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>The principal, Dr. Lakshmi, sees the draft here. She approves it, and it becomes Ms. Garima's <strong>Daily Curriculum</strong>, a day-by-day plan for her classroom.</p>
+      <p>This matters because it means <strong>school leadership and teachers share one plan</strong>, instead of the principal discovering in February that a class is behind.</p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>1.4 · A red alert closes the school</b> <span><span class="tag core">Core</span> · 1.5 min · sign in as Ms. Garima</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Sign in as Ms. Garima again and open <b>Time-Aware Engine</b>.</li><li>Scroll to the bottom and click <b>Record a Lost Day</b>.</li><li>In <i>Find period</i>, type the lost date (<code>2026-11-27</code> if you generate the schedule on 20 Nov, see the note below).</li><li>Tick both periods on that date and check that both say <b>Core</b>.</li><li>Reason: <b>Extreme Weather</b>. Add a short note, then record.</li><li>Open the <b>Day tracker</b> tab.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Now real life arrives. <span class="pause">[pause]</span> On the 27th of November, a <strong>red alert</strong> shuts the school. Ms. Garima loses two Science periods, and both of them were <em>Core</em>.</p>
+      <p>Normally this is where the rushing begins. Instead, she records the lost day. <span class="pause">[record]</span></p>
+      <p>Straight away the engine proposes a recovery. <strong>Both Core periods are still taught in class</strong>, in the following days. To make room, some Non-Core work moves to guided independent learning.</p>
+      <p><strong>The engine follows three promises.</strong> Core is never cut. Nothing changes without approval. If something truly cannot fit, it says so openly. It never silently drops it.</p>
+    </div>
+  </div>
+  <div class="do" style="border-top:1px solid var(--line); border-right:none"><span class="note">Choosing the date: the engine moves Non-Core work out of the <b>next three teaching days</b> to make room. Pick a date where <b>both periods are Core</b> and the next three days contain Non-Core periods; otherwise the engine honestly reports a Core period it could not fit. The schedule is built from the day you click Generate, so the right date changes with that day. Verified on 20 Nov: 26, 27 and 28 Nov, and 5 and 7 Dec, all recover both Core periods; 24 Nov does not. If you present on another day, rehearse once that morning and pick the date then.</span></div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>1.5 · Recovery approved: version 2</b> <span><span class="tag core">Core</span> · 45 s · sign in as Dr. Lakshmi</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Sign in as Principal, open <b>Planning Oversight</b>.</li><li>Show the recovery proposal listing every changed period.</li><li>Click <b>Approve recovery schedule</b>.</li><li><span class="tag opt">Optional</span> Show <b>Campus Dashboard</b>, including lost teaching days.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>The principal sees exactly <strong>what moved, where, and why</strong>. She approves, and the plan becomes version 2.</p>
+      <div class="quote"><p><strong>A whole school day was lost, and not one Core lesson was lost.</strong></p></div>
+      <p>That's Ms. Garima's red alert taken care of. Now, what happens when Gurleen picks up her pen?</p>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============ ACT 2 ============ -->
+<div class="act">
+<div class="act-head">
+  <div class="kicker">Act 2 · Invisible gaps · about 6 minutes</div>
+  <h2>From a handwritten page to every dashboard, in minutes</h2>
+  <p>This is the emotional centre of the demo. Slow down here.</p>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>2.1 · Gurleen uploads her worksheet</b> <span><span class="tag core">Core</span> · 1.5 min · sign in as Gurleen</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Sign in as <b>Student</b> (Gurleen).</li><li>Open <b>Upload</b>. Choose <i>Worksheet: Changes Around Us</i>.</li><li>Upload <code>gurleen_7-a_science_worksheet.png</code>.</li><li>Click <b>Run OCR</b>. While it reads, talk.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Most classroom work in India still happens <strong>on paper</strong>. And that's how it should be: children learn by writing. But paper is slow to mark, and the insight stays locked in a notebook.</p>
+      <p>Gurleen did her Science worksheet by hand. She takes <strong>one photo</strong> and uploads it. <span class="pause">[click Run OCR]</span></p>
+      <p>Now an AI model reads her handwriting, word for word. It runs <strong>on the school's own computer</strong>, so a child's work doesn't need to leave the school.</p>
+      <p><span class="pause">[when text appears]</span> Here is her answer, typed out exactly as she wrote it, spelling mistakes and all. We don't "correct" a child's words before the teacher has seen them.</p>
+    </div>
+  </div>
+  <div class="do" style="border-top:1px solid var(--line); border-right:none"><span class="note">If reading takes longer than about 40 seconds, say: "While the model reads, notice that nothing here asks Gurleen for a typed answer. She only needs a phone camera." If it fails, open the backup video or screenshots 35–36.</span></div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>2.2 · The teacher checks, and decides</b> <span><span class="tag core">Core</span> · 2 min · sign in as Ms. Garima</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Sign in as Ms. Garima, open <b>Upload</b> and the same worksheet.</li><li>Point at the class list: who has uploaded, who is pending.</li><li>Pick <b>Gurleen</b> and click <b>Evaluate with AI</b>.</li><li>Point at the per-question marks and the flagged, partly correct answers.</li><li>Adjust a mark if you want, then click <b>Publish grade</b>.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Ms. Garima opens the same worksheet. At a glance she can see <strong>who has handed in and who hasn't</strong>. No pile of notebooks on her desk at 10 pm.</p>
+      <p>She asks the AI for a first draft of the marking. It checks each answer against her answer key. Gurleen gets <strong>5 out of 7</strong>, and two answers are <strong>flagged as partly correct</strong>, with the missing part shown.</p>
+      <p><span class="pause">[while the AI marks, about 1 to 1.5 minutes]</span> The AI is now reading each answer and comparing it with the teacher's answer key, question by question. Notice it doesn't just look for keywords: it checks whether the reasoning matches.</p>
+      <p><span class="pause">[when the draft appears]</span> But this is the most important sentence of our whole project: <strong>the AI only suggests. The teacher decides.</strong> Nothing reaches a student or a parent until Ms. Garima reads it, agrees or changes it, and presses Publish.</p>
+      <p>We are not replacing the teacher. <strong>We're giving her back her evenings</strong>, so she can spend her time on the children, not the paperwork. <span class="pause">[click Publish]</span></p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>2.3 · Gurleen sees her progress</b> <span><span class="tag core">Core</span> · 1 min · sign in as Gurleen</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Sign in as Gurleen. <b>My Learning Mission</b> opens.</li><li>Point at the work marked <i>Graded</i>, the new report-card column and the teacher's feedback.</li><li>Point at her four parameters against her April baseline and the class average.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Moments later, Gurleen sees it. Not just "5 out of 7", but <strong>what she understood, what she missed, and her teacher's words</strong>.</p>
+      <p>She sees her own growth since April. Her overall parameter has moved from <strong>54 to 58</strong>. <span class="pause">[pause]</span> She isn't compared only with the topper. She is <strong>compared with who she was</strong> at the start of the year.</p>
+      <p>For a child who has always felt "weak at Science", that one small line going up can change how she sees herself.</p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>2.4 · Her mother hears in time</b> <span><span class="tag core">Core</span> · 1.5 min · sign in as Harpreet Kaur</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Sign in as <b>Parent</b>.</li><li><b>Family Progress</b>: point at the <i>New result</i> notification.</li><li>Scroll to the report and the <i>activities to help at home</i>.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Remember Gurleen's mother from our opening, who would only find out at the half-yearly, when it was too late? <span class="pause">[pause]</span></p>
+      <p>This is Harpreet Kaur, Gurleen's mother. She got a notification: <strong>"New result"</strong>. Not in March. <strong>Today.</strong></p>
+      <p>She sees the same report in simple language and only for her own child, along with <strong>small activities she can do at home</strong>. She doesn't need to know Science to help. She only needs to know <em>where</em> her daughter needs her.</p>
+      <div class="quote"><p><strong>One photographed page, and a teacher, a student and a parent are all on the same side, in minutes, not months.</strong></p></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============ ACT 3 ============ -->
+<div class="act">
+<div class="act-head">
+  <div class="kicker">Act 3 · Closing the gap · about 4 minutes</div>
+  <h2>Seeing a gap is not enough, so we help close it</h2>
+  <p>Sign in once more as Ms. Garima. All of the following is in her sidebar.</p>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>3.1 · Differentiated Homework: one child, one need</b> <span><span class="tag core">Core</span> · 1.5 min · Ms. Garima</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Open <b>Differentiated Homework</b>.</li><li>Choose <b>7-A</b>, <b>Science</b>, student <b>Mahika Sharma</b>.</li><li>Show the gap analysis (weakest: Language).</li><li>Click Preview, then show the approve and assign step.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Remember Gurleen getting the same homework as everyone else? In most classrooms, every child does. The child who is already ahead gets bored, and the child who is behind falls further behind.</p>
+      <p>Meet Mahika, another child from the middle of the class. Her weakest parameter is <strong>Language</strong>. She often knows the Science, but the <em>wording</em> of the question trips her up. Many children learning in a second language face exactly this.</p>
+      <p>So the system builds homework for Mahika from the school's own question bank, <strong>aimed at her real need</strong>. Ms. Garima reviews it and approves it. When it's marked, Mahika's parameters update and her parents are told.</p>
+      <p><strong>Same class, same teacher, but now every child gets homework that fits.</strong></p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>3.2 · LearnSphere: the Panchapadi path</b> <span><span class="tag core">Core</span> · 1.5 min · Ms. Garima</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Open <b>LearnSphere</b>, choose Class 7-A and a student.</li><li><b>Learning Journey</b>: show the five Panchapadi stage graphs.</li><li><b>Teach-Back Challenge</b>: show AI feedback beside the teacher's verified feedback.</li><li><span class="tag opt">Optional</span> <b>Real-Life Missions</b>: Divya Desai's kitchen change hunt or turmeric indicator.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Learning isn't one jump. It's a path. We used <strong>Panchapadi</strong>, a five-step model of learning from Indian education:</p>
+      <p><strong>Adheeti</strong>, getting ready. <strong>Bodh</strong>, understanding. <strong>Abhyas</strong>, practising. <strong>Prayog</strong>, applying it to life. <strong>Prasar</strong>, extending it on your own.</p>
+      <p>The teacher can see which step each child has truly reached. If there isn't enough evidence, we say <strong>"insufficient evidence"</strong>, never a zero. <strong>A child is never labelled by a lack of data.</strong></p>
+      <p>In the <strong>Teach-Back Challenge</strong>, a child explains a concept in their own words, for example why a sea breeze blows. Because <em>if you can teach it, you understand it.</em> The AI points out what was understood and what was missed, and the teacher confirms it.</p>
+      <p>And <strong>Real-Life Missions</strong> take Science into the kitchen, like making a natural indicator from turmeric at home. Learning becomes something a child does, not something they memorise.</p>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>3.3 · AI Question Studio</b> <span><span class="tag opt">Optional</span> · 45 s · Ms. Garima</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Open <b>AI Question Studio</b>.</li><li>Show the chapter upload and the Bloom's level selector.</li><li>Show an already generated paper. Don't generate live unless time allows.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Making a good question paper takes hours. Here a teacher uploads a chapter and chooses the level of thinking, from <em>remember</em> up to <em>create</em>, following Bloom's taxonomy, which every B.Ed. teacher learns.</p>
+      <p>The AI drafts the questions and double-checks every answer key against the chapter. <strong>Again, the teacher edits, approves and assigns.</strong></p>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ============ CLOSING ============ -->
+<div class="act">
+<div class="act-head">
+  <div class="kicker">Closing · about 1 minute</div>
+  <h2>Back to Gurleen</h2>
+  <p>Leave the student or parent dashboard on screen while you speak. End on a human face, not a chart.</p>
+</div>
+
+<div class="step">
+  <div class="step-top"><b>Closing words</b> <span><span class="tag core">Core</span> · 1 min</span></div>
+  <div class="step-body">
+    <div class="do"><div class="lbl">On screen / Do</div>
+      <ol><li>Switch back to Gurleen's dashboard or the parent view.</li><li>Step away from the laptop and face the audience.</li></ol>
+    </div>
+    <div class="say"><div class="lbl">Say</div>
+      <p>Let's go back to our three people. <span class="pause">[pause]</span></p>
+      <p><strong>Ms. Garima</strong> lost two days to a red alert, and <strong>her Core lessons were still taught.</strong> Her marking took minutes instead of evenings, and she made every final decision.</p>
+      <p><strong>Gurleen</strong> wrote on paper, as children should, and saw exactly where she had grown and where she needed help. She got homework made for her and a path to follow.</p>
+      <p>And <strong>her mother</strong> heard the same day, <strong>not at the half-yearly</strong>, with simple ways to help at home.</p>
+      <p>Teachers will always know their toppers. We built LumenEIOS for the children in the middle, and we didn't build it to replace anyone in a school. We built it so that <strong>no child slips through the cracks just because nobody could see them in time.</strong></p>
+      <div class="quote"><p><strong>Every child, noticed in time. Thank you.</strong></p></div>
+    </div>
+  </div>
+</div>
+
+<h2>The research behind it, in plain words</h2>
+<p>Use these if the mentor asks "Where does this come from?"</p>
+<table class="tbl">
+  <tr><th style="width:28%">Idea</th><th>Where it comes from and why we used it</th></tr>
+  <tr><td><b>Four parameters</b> (Language, Concept, Application, Critical Thinking)</td><td>NEP 2020 asks schools to move from rote marks to <i>competency-based</i> assessment. Our four parameters turn that idea into something a teacher can see for every child.</td></tr>
+  <tr><td><b>Core and Non-Core</b></td><td>When time is short, not every topic carries equal weight. Protecting the foundations first keeps gaps from carrying into the next grade.</td></tr>
+  <tr><td><b>NCERT alignment</b></td><td>We studied the official NCERT Class 6–8 Maths and Science books (<i>Ganita Prakash</i>, <i>Curiosity</i>) and the NCERT learning-outcomes document, using only official NCERT sources. We prepared a permission request to NCERT before using any of their content inside the product.</td></tr>
+  <tr><td><b>Panchapadi</b></td><td>A five-step Indian learning model: prepare, understand, practise, apply, extend. It describes learning as a path, not a single score.</td></tr>
+  <tr><td><b>Bloom's taxonomy</b></td><td>The classic ladder of thinking levels that teachers already use. Our question generator follows it.</td></tr>
+  <tr><td><b>Teach-Back</b></td><td>Explaining something to someone else is one of the strongest tests of real understanding.</td></tr>
+  <tr><td><b>Evidence before judgement</b></td><td>We only recommend support after enough teacher-reviewed work (at least 3 pieces from 2 different activities). Missing data is shown as missing, never as zero.</td></tr>
+</table>
+</div>
+
+<!-- ============ Q&A ============ -->
+<div class="act">
+<h2 style="margin-top:0">Likely questions and simple answers</h2>
+<table class="tbl">
+  <tr><th style="width:34%">Question</th><th>Answer</th></tr>
+  <tr><td>Will AI replace teachers?</td><td>No. Every AI output is a draft. Only the teacher can publish a mark, approve homework or confirm a learning stage. The AI saves time. It never has the final word.</td></tr>
+  <tr><td>What if the AI marks wrongly?</td><td>That is exactly why the teacher reviews it. The system also checks answers against the answer key and flags disagreements so the teacher looks twice.</td></tr>
+  <tr><td>Is children's data safe?</td><td>The AI runs on the school's own computer. Parents see only their own child and teachers only their own classes. Every grade and planning change is recorded in an audit trail.</td></tr>
+  <tr><td>Will it work in rural schools with little technology?</td><td>Yes, that was our starting point. Students write on paper, and one phone photo is enough. Our demo includes a hill school that started lower and grew faster.</td></tr>
+  <tr><td>Is the data real?</td><td>No. All schools, people and scores in the demo are fictional, created so we could show the full journey safely.</td></tr>
+  <tr><td>What's next?</td><td>Trying it with a real school, receiving NCERT's permission to use official curriculum content, and adding more subjects and classes.</td></tr>
+  <tr><td>How does it work technically? (keep it short)</td><td>It's a website for five kinds of users. Behind it is a database of classes and results, and an AI model that can read handwriting and draft feedback. That's all most audiences need.</td></tr>
+</table>
+
+<h2>If something goes wrong</h2>
+<ul>
+  <li><b>AI is slow:</b> keep talking. Use the "While the model reads…" line in step 2.1. Never stand in silence.</li>
+  <li><b>AI fails or the screen freezes:</b> say "Let me show you what this looks like", then play <code>LumenEIOS_showcase.mp4</code> or open the screenshots in <code>docs/screenshots/</code>.</li>
+  <li><b>Running out of time:</b> skip every <span class="tag opt">Optional</span> step, and cut Act 3 down to Differentiated Homework plus one sentence on Panchapadi. Always keep the closing.</li>
+  <li><b>Wrong account signed in:</b> sign out and use the one-click button. Calmly say "Let's switch to the teacher's view."</li>
+</ul>
+</div>
+
+</body>
+</html>

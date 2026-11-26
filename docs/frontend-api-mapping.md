@@ -1,5 +1,13 @@
 # LumenEIOS Frontend-to-Backend API Mapping
 
+**Current live integration:** `src/pages/homework/LiveApp.tsx` uses authenticated homework and
+question-bank contracts through `src/lib/apiClient.ts`. The legacy screens mapped below are
+an opt-in offline demonstration and cannot call the live backend. See
+[final acceptance report](project/FINAL_ACCEPTANCE_REPORT.md) for verified live workflows, browser tests
+and security/error contracts. Parent lookup currently uses school-supplied student/assignment IDs;
+there is no authorized parent homework-discovery API or automatic token-refresh endpoint.
+
+
 This document provides a comprehensive mapping between the existing React + Vite + TypeScript frontend routes, UI components, interactive workflows, and the corresponding backend FastAPI REST endpoints.
 
 ---
@@ -205,14 +213,15 @@ This document provides a comprehensive mapping between the existing React + Vite
 ## 5. Assessments, Question Bank, & Grading
 
 ### 5.1 Assessment Creation & Publishing
-- **Frontend Route**: `/teacher/assessments`
+- **Frontend Route**: `/teacher/assessments-beta`
 - **Frontend Component**: `src/pages/teacher/AssessmentBuilder.tsx`
-- **UI Trigger**: "Create Assessment Cycle" modal and "Publish Assessment".
+- **UI Trigger**: Generate questions from a chapter PDF, then click **Assign the Assignment**.
 - **Backend API Endpoints**:
   - `GET /api/v1/classes/{class_id}/assessments`
   - `POST /api/v1/classes/{class_id}/assessments`
   - `POST /api/v1/assessments/{assessment_id}/publish`
   - `GET /api/v1/assessments/question-bank`
+  - `POST /api/v1/assessments/generate-questions-beta`
 - **Request Schema (`POST /assessments`)**:
   ```json
   {
@@ -248,7 +257,7 @@ This document provides a comprehensive mapping between the existing React + Vite
 ## 6. Document Upload, Pluggable OCR, & Scan Review
 
 ### 6.1 Handwritten Assessment Scan Review (Low-Tech Workflow)
-- **Frontend Route**: `/teacher/scan-review`
+- **Frontend Route**: `/upload`
 - **Frontend Component**: `src/pages/teacher/ScanReview.tsx`
 - **UI Trigger**: File upload of answer script image/PDF -> OCR extraction review -> "Approve & Recalibrate Baseline".
 - **Backend API Endpoints**:

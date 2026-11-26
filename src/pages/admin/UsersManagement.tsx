@@ -1,4 +1,7 @@
-import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { apiClient } from '../../lib/apiClient';
+import { getDefaultDashboardPath } from '../../lib/permissions';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useData } from '../../context/DataContext';
 import { User, Role } from '../../types';
@@ -6,15 +9,37 @@ import { Card, CardHeader, CardBody } from '../../components/common/Card';
 import { Button } from '../../components/common/Button';
 import { Badge } from '../../components/common/Badge';
 import { SearchInput } from '../../components/common/SearchInput';
-import { Users, Shield, BookOpen, GraduationCap, School, CheckCircle2 } from 'lucide-react';
+import { getRoleLabel } from '../../lib/permissions';
+import { nameInitial } from '../../lib/utils';
+import { Users, Shield, BookOpen, GraduationCap, School, CheckCircle2, Code } from 'lucide-react';
 
 export const UsersManagement: React.FC = () => {
-  const { availableUsers, loginAsRole } = useAuth();
-  const { schools } = useData();
+  const { availableUsers: demoUsers, loginAsRole, loginAsAccount } = useAuth();
+  const { schools, workspace } = useData();
+  const navigate = useNavigate();
+  // Live: every account in the database (staff first); offline demo: the seeded personas.
+  const [liveUsers, setLiveUsers] = useState<typeof demoUsers | null>(null);
+  useEffect(() => {
+    if (!workspace) return;
+    let active = true;
+    apiClient.users.list().then((rows) => {
+      if (!active) return;
+      const order: Record<string, number> = { admin: 0, principal: 1, teacher: 2, student: 3, parent: 4 };
+      setLiveUsers(rows.map((u: any) => ({ id: u.id, email: u.email, name: u.name, role: u.role, schoolId: u.school_id, designation: u.designation }))
+        .sort((a: any, b: any) => (order[a.role] ?? 9) - (order[b.role] ?? 9) || a.name.localeCompare(b.name)));
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [workspace]);
+  const availableUsers = liveUsers ?? (workspace ? [] : demoUsers);
 
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [toast, setToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const filteredUsers = availableUsers.filter((u) => {
     const matchesSearch =
@@ -27,6 +52,8 @@ export const UsersManagement: React.FC = () => {
 
   const getRoleIcon = (role: Role) => {
     switch (role) {
+      case 'developer':
+        return <Code className="w-4 h-4 text-teal-700" />;
       case 'admin':
         return <Shield className="w-4 h-4 text-indigo-600" />;
       case 'principal':
@@ -60,7 +87,7 @@ export const UsersManagement: React.FC = () => {
         </div>
 
         <Badge variant="teal" size="sm">
-          5 Demo Personas Configured
+          {availableUsers.length} {availableUsers.length === 1 ? 'account' : 'accounts'}
         </Badge>
       </div>
 
@@ -82,7 +109,7 @@ export const UsersManagement: React.FC = () => {
               className="px-3 py-1.5 bg-surface-bg border border-surface-border rounded-lg text-xs"
             >
               <option value="all">All Roles</option>
-              <option value="admin">Admin</option>
+              <option value="admin">Management</option>
               <option value="principal">Principal</option>
               <option value="teacher">Teacher</option>
               <option value="student">Student</option>
@@ -114,7 +141,7 @@ export const UsersManagement: React.FC = () => {
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-navy-800 text-white flex items-center justify-center font-bold text-xs shrink-0">
-                            {user.name.charAt(0)}
+                            {nameInitial(user.name)}
                           </div>
                           <div>
                             <span className="font-bold text-navy-900 block">{user.name}</span>
@@ -126,9 +153,9 @@ export const UsersManagement: React.FC = () => {
                         {user.designation || 'Staff Member'}
                       </td>
                       <td className="py-3 px-3">
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-surface-bg border-surface-border text-navy-900 capitalize">
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-surface-bg border-surface-border text-navy-900">
                           {getRoleIcon(user.role)}
-                          <span>{user.role}</span>
+                          <span>{getRoleLabel(user.role)}</span>
                         </span>
                       </td>
                       <td className="py-3 px-4 text-content-primary">
@@ -136,9 +163,18 @@ export const UsersManagement: React.FC = () => {
                       </td>
                       <td className="py-3 px-4 text-right">
                         <button
-                          onClick={() => {
-                            loginAsRole(user.role);
-                            setToast(`Switched active context to ${user.name} (${user.role})`);
+                          onClick={async () => {
+                            try {
+                              if (workspace) {
+                                const signedIn = await loginAsAccount(user.id);
+                                navigate(getDefaultDashboardPath(signedIn.role), { replace: true });
+                                return;
+                              }
+                              await loginAsRole(user.role);
+                              setToast(`Switched active context to ${user.name} (${getRoleLabel(user.role)})`);
+                            } catch (err) {
+                              setToast(err instanceof Error ? err.message : 'Could not sign in as this user.');
+                            }
                           }}
                           className="px-3 py-1 bg-navy-800 hover:bg-navy-900 text-white rounded-lg text-xs font-semibold transition-colors"
                         >

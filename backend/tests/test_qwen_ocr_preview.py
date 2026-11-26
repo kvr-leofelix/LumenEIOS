@@ -1,12 +1,18 @@
 import io
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from PIL import Image
+from sqlalchemy import select
 
+from backend.app.core.security import create_access_token
+from backend.app.models.entities import StudentOcrHistory
 import backend.app.services.ocr_service as ocr_service
+from backend.app.services import gemini_ocr_service
+from backend.app.services.ai_gateway import AINotConfigured
 from backend.app.services.storage_service import storage_service
 
 URL = "/api/v1/ocr/extract-preview"
@@ -20,9 +26,13 @@ def png_bytes() -> bytes:
 
 @pytest.fixture
 def fake_model(monkeypatch):
-    """Skip the GPU while keeping the provider's file handling real."""
-    monkeypatch.setattr(ocr_service._qwen_provider, "_load_model", lambda: None)
-    monkeypatch.setattr(ocr_service._qwen_provider, "_infer_image", lambda _image: "recognized text")
+    """Stub the Gemini call while keeping the real upload and page handling."""
+    async def transcribe(*, system, image, mime_type):
+        assert image
+        assert mime_type in {"image/png", "image/jpeg"}
+        return "recognized text"
+
+    monkeypatch.setattr(gemini_ocr_service, "get_ai_provider", lambda: SimpleNamespace(transcribe_image=transcribe))
 
 
 async def post(client, token, name, content, content_type="application/octet-stream"):
@@ -30,6 +40,7 @@ async def post(client, token, name, content, content_type="application/octet-str
         URL,
         headers={"Authorization": f"Bearer {token}"},
         files={"files": (name, content, content_type)},
+        data={"provider": "gemini"},
     )
 
 
@@ -86,9 +97,32 @@ async def test_preview_returns_text_and_removes_temporary_upload(client, teacher
 
     assert response.status_code == 200
     body = response.json()
-    assert body["provider"] == "qwen2.5-vl"
+    assert body["provider"] == "gemini"
     assert body["results"][0]["extracted_text"] == "recognized text"
     assert set(Path(storage_service.upload_dir).iterdir()) == before
+
+
+@pytest.mark.asyncio
+async def test_preview_defaults_to_qwen(client, teacher_token, monkeypatch):
+    from backend.app.api.v1 import ocr as ocr_api
+
+    async def extract_document(path, options=None):
+        return {"extracted_text": "qwen text", "pages_processed": 1}
+
+    async def gemini_must_not_run(*args, **kwargs):
+        raise AssertionError("Gemini must only run when explicitly chosen")
+
+    monkeypatch.setattr(ocr_api.qwen_model, "extract_document", extract_document)
+    monkeypatch.setattr(ocr_api, "extract_gemini_text", gemini_must_not_run)
+    response = await client.post(
+        URL,
+        headers={"Authorization": f"Bearer {teacher_token}"},
+        files={"files": ("sheet.png", png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "qwen"
+    assert response.json()["results"][0]["extracted_text"] == "qwen text"
 
 
 @pytest.mark.asyncio
@@ -143,10 +177,53 @@ async def test_preview_rejects_files_over_size_limit(client, teacher_token):
 
 
 @pytest.mark.asyncio
-async def test_preview_forbids_students(client, student_token):
-    response = await post(client, student_token, "sheet.png", png_bytes(), "image/png")
+async def test_student_uploads_save_extracts_to_the_linked_student_only(
+    client, teacher_token, student_token, fake_model, db_session,
+):
+    enrolled = await client.post(
+        "/api/v1/onboarding/students",
+        headers={"Authorization": f"Bearer {teacher_token}"},
+        json={
+            "name": "OCR test student", "email": "ocr-student@example.com", "password": "sample-ocr-test",
+            "class_id": "class-8a", "roll_no": 4567,
+        },
+    )
+    assert enrolled.status_code == 201
+    user_id = enrolled.json()["id"]
+    token = create_access_token(user_id, school_id="school-1", role="student")
+    student_headers = {"Authorization": f"Bearer {token}"}
+    profile = await client.get("/api/v1/classes/students/me", headers=student_headers)
+    assert profile.status_code == 200
+    student_id = profile.json()["id"]
+    assert student_id != user_id
+    assert profile.json()["class_name"] == "Class 8-A"
+    assert "Mathematics" in profile.json()["subject_names"]
+    demo_profile = await client.get(
+        "/api/v1/classes/students/me", headers={"Authorization": f"Bearer {student_token}"},
+    )
+    assert demo_profile.json()["parent_names"] == ["Meera Patel"]
 
-    assert response.status_code == 403
+    response = await post(client, token, "direct.png", png_bytes(), "image/png")
+    assert response.status_code == 200
+    streamed = await client.post(
+        f"{URL}/stream", headers=student_headers, files={"files": ("streamed.png", png_bytes(), "image/png")},
+        data={"provider": "gemini"},
+    )
+    events = [json.loads(line[6:]) for line in streamed.text.splitlines() if line.startswith("data: ")]
+    assert events[-1]["kind"] == "complete"
+
+    history_url = "/api/v1/ocr/history"
+    history = await client.get(history_url, headers=student_headers)
+    assert history.status_code == 200
+    assert [row["file_name"] for row in history.json()] == ["streamed.png", "direct.png"]
+    assert all(row["extracted_text"] == "recognized text" for row in history.json())
+    rows = (await db_session.scalars(select(StudentOcrHistory).where(StudentOcrHistory.student_id == student_id))).all()
+    assert len(rows) == 2
+
+    other = await client.get(history_url, headers={"Authorization": f"Bearer {student_token}"})
+    # The demo student may carry seeded walkthrough history; only this test's uploads must not leak.
+    assert {"direct.png", "streamed.png"}.isdisjoint({row["file_name"] for row in other.json()})
+    assert (await client.get(history_url, headers={"Authorization": f"Bearer {teacher_token}"})).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -155,7 +232,7 @@ async def test_preview_returns_json_for_unexpected_errors(client, teacher_token,
     def fail(*_args):
         raise KeyError("unexpected")
 
-    monkeypatch.setattr(ocr_service._qwen_provider, "_extract_sync", fail)
+    monkeypatch.setattr(gemini_ocr_service, "get_ai_provider", fail)
 
     response = await post(client, teacher_token, "sheet.png", png_bytes(), "image/png")
 

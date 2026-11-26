@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { usePlanningStore, PlanningStore } from '../lib/planning/store';
+import { useAuth } from './AuthContext';
 import {
   School,
   ClassSection,
@@ -10,10 +12,13 @@ import {
   LostTeachingDay,
   CrossCurricularProposal,
   HomeworkRemediation,
+  AnswerSheetUpload,
+  SheetAssignment,
   AuditLog,
   NotificationItem,
   SourceDocument,
   Question,
+  User,
 } from '../types';
 import {
   initialSchools,
@@ -28,8 +33,12 @@ import {
   initialHomeworkRemediations,
   initialAuditLogs,
   initialNotifications,
+  initialSheetAssignments,
 } from '../data/seedData';
 import { CompressionPlanProposal } from '../lib/calculations';
+import { DEMO_MODE } from '../lib/runtime';
+import type { Workspace, WorkspaceTeacher, WorkspaceAssignment, WorkspaceSnapshot } from '../lib/workspace';
+import { classIdentity, parseClassName } from '../lib/className';
 import { apiClient } from '../lib/apiClient';
 
 const initialSourceDocuments: SourceDocument[] = [
@@ -108,6 +117,8 @@ const initialQuestionBank: Question[] = initialAssessments.flatMap((asm) =>
 );
 
 interface DataContextType {
+  /** Authoritative curriculum-planning workspace (config, syllabus governance, plans, execution, recovery). */
+  planning: PlanningStore;
   schools: School[];
   classes: ClassSection[];
   subjects: Subject[];
@@ -118,29 +129,56 @@ interface DataContextType {
   lostTeachingDays: LostTeachingDay[];
   crossCurricularProposals: CrossCurricularProposal[];
   homeworkRemediations: HomeworkRemediation[];
+  answerSheetUploads: AnswerSheetUpload[];
+  sheetAssignments: SheetAssignment[];
   auditLogs: AuditLog[];
   notifications: NotificationItem[];
   sourceDocuments: SourceDocument[];
   questionBank: Question[];
+  /** Live database workspace (role-scoped). Null until loaded, and always null in offline demo mode. */
+  workspace: Workspace | null;
+  workspaceLoading: boolean;
+  teachers: WorkspaceTeacher[];
+  teacherAssignments: WorkspaceAssignment[];
+  snapshots: WorkspaceSnapshot[];
+  refreshWorkspace: () => Promise<void>;
 
   // Mutators
   addSchool: (school: Partial<School>) => void;
   updateSchool: (id: string, updates: Partial<School>) => void;
+  addClass: (schoolId: string, name: string) => { ok: true; name: string } | { ok: false; error: string };
+  addedTeachers: User[];
+  addTeacher: (teacher: {
+    name: string;
+    email: string;
+    designation: string;
+    schoolId: string;
+    existingEmails: string[];
+  }) => { ok: true; teacher: User } | { ok: false; error: string };
+  addStudent: (student: {
+    name: string;
+    rollNo: number;
+    gender: 'M' | 'F' | 'Other';
+    classId: string;
+    schoolId: string;
+  }) => void;
   assignTeacherToClass: (classId: string, teacherId: string, teacherName: string) => void;
   recordLostTeachingDay: (item: Omit<LostTeachingDay, 'id'>) => void;
-  addAssessment: (assessment: Omit<Assessment, 'id'>) => void;
+  addAssessment: (assessment: Omit<Assessment, 'id'>) => Promise<void>;
   gradeAssessmentResult: (result: Omit<AssessmentResult, 'id'>) => void;
   applySyllabusCompression: (plan: CompressionPlanProposal) => void;
   acceptCrossCurricularProposal: (id: string) => void;
   rejectCrossCurricularProposal: (id: string) => void;
   assignHomeworkRemediation: (item: Omit<HomeworkRemediation, 'id'>) => void;
   submitStudentHomework: (id: string) => void;
+  addAnswerSheetUpload: (item: Omit<AnswerSheetUpload, 'id' | 'uploadedAt'>) => AnswerSheetUpload;
+  addSheetAssignment: (item: Omit<SheetAssignment, 'id' | 'createdAt'>) => void;
   markNotificationAsRead: (id: string) => void;
   addSourceDocuments: (docs: SourceDocument[]) => void;
   removeSourceDocument: (id: string) => void;
   addQuestionsToBank: (questions: Question[]) => void;
-  updateBankQuestion: (id: string, updates: Partial<Question>) => void;
-  deleteBankQuestion: (id: string) => void;
+  updateBankQuestion: (id: string, updates: Partial<Question>) => Promise<void>;
+  deleteBankQuestion: (id: string) => Promise<void>;
   attachQuestionsToAssessment: (assessmentId: string, questions: Question[]) => void;
   resetDemoData: () => void;
 }
@@ -156,7 +194,12 @@ function loadStorage<T>(key: string, defaultValue: T): T {
   }
 }
 
+/** Live mode reads schools/classes/students/assessments from the database, never from browser storage. */
+const LIVE = !DEMO_MODE;
+const LIVE_KEYS = new Set(['schools', 'classes', 'students', 'assessments', 'assessmentResults']);
+
 function saveStorage<T>(key: string, value: T): void {
+  if (LIVE && LIVE_KEYS.has(key)) return;
   try {
     localStorage.setItem(`lumeneios_${key}`, JSON.stringify(value));
   } catch (err) {
@@ -165,14 +208,48 @@ function saveStorage<T>(key: string, value: T): void {
 }
 
 export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [schools, setSchools] = useState<School[]>(() => loadStorage('schools', initialSchools));
-  const [classes, setClasses] = useState<ClassSection[]>(() => loadStorage('classes', initialClasses));
-  const [subjects] = useState<Subject[]>(initialSubjects);
-  const [students, setStudents] = useState<Student[]>(() => loadStorage('students', initialStudents));
-  const [assessments, setAssessments] = useState<Assessment[]>(() => loadStorage('assessments', initialAssessments));
-  const [assessmentResults, setAssessmentResults] = useState<AssessmentResult[]>(() =>
-    loadStorage('assessmentResults', initialAssessmentResults)
+  const { currentUser: planningUser } = useAuth();
+  const actorRef = React.useRef(planningUser);
+  actorRef.current = planningUser;
+  const getActor = React.useCallback(
+    () => (actorRef.current ? { id: actorRef.current.id, name: actorRef.current.name, role: actorRef.current.role, email: actorRef.current.email } : null),
+    [],
   );
+  const planning = usePlanningStore(getActor, planningUser ? `${planningUser.id}:${planningUser.role}` : '');
+  const [schools, setSchools] = useState<School[]>(() => (LIVE ? [] : loadStorage('schools', initialSchools)));
+  const [classes, setClasses] = useState<ClassSection[]>(() => (LIVE ? [] : loadStorage('classes', initialClasses)));
+  const [subjects, setSubjects] = useState<Subject[]>(initialSubjects);
+  const [students, setStudents] = useState<Student[]>(() => (LIVE ? [] : loadStorage('students', initialStudents)));
+  const [assessments, setAssessments] = useState<Assessment[]>(() => (LIVE ? [] : loadStorage('assessments', initialAssessments)));
+  const [assessmentResults, setAssessmentResults] = useState<AssessmentResult[]>(() =>
+    LIVE ? [] : loadStorage('assessmentResults', initialAssessmentResults)
+  );
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState(LIVE);
+  const workspaceKey = planningUser ? `${planningUser.id}:${planningUser.role}:${planningUser.schoolId}` : '';
+  // A plain promise chain (no await) so a synchronous test double settles within the first render.
+  const refreshWorkspace = React.useCallback((): Promise<void> => {
+    if (!LIVE) return Promise.resolve();
+    return apiClient.workspace().then((ws) => {
+      setSchools(ws.schools as School[]);
+      setClasses(ws.classes as ClassSection[]);
+      if (ws.subjects.length) setSubjects(ws.subjects as Subject[]);
+      setStudents(ws.students as Student[]);
+      setAssessments(ws.assessments as Assessment[]);
+      setAssessmentResults(ws.assessmentResults as AssessmentResult[]);
+      setWorkspace(ws);
+    });
+  }, []);
+  // Every account switch starts from an empty workspace, so one user's data never shows for another.
+  useEffect(() => {
+    if (!LIVE) return;
+    let active = true;
+    setWorkspace(null); setSchools([]); setClasses([]); setStudents([]); setAssessments([]); setAssessmentResults([]);
+    if (!workspaceKey) { setWorkspaceLoading(false); return; }
+    setWorkspaceLoading(true);
+    refreshWorkspace().catch(() => undefined).finally(() => { if (active) setWorkspaceLoading(false); });
+    return () => { active = false; };
+  }, [workspaceKey, refreshWorkspace]);
   const [curriculumDays, setCurriculumDays] = useState<CurriculumDay[]>(() =>
     loadStorage('curriculumDays', initialCurriculumDays)
   );
@@ -183,8 +260,15 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     loadStorage('crossCurricularProposals', initialCrossCurricularProposals)
   );
   const [homeworkRemediations, setHomeworkRemediations] = useState<HomeworkRemediation[]>(() =>
-    loadStorage('homeworkRemediations', initialHomeworkRemediations)
+    loadStorage('homeworkRemediationsV2', initialHomeworkRemediations)
   );
+  const [answerSheetUploads, setAnswerSheetUploads] = useState<AnswerSheetUpload[]>(() =>
+    loadStorage('answerSheetUploads', [])
+  );
+  const [sheetAssignments, setSheetAssignments] = useState<SheetAssignment[]>(() =>
+    loadStorage('sheetAssignments', initialSheetAssignments)
+  );
+  const [addedTeachers, setAddedTeachers] = useState<User[]>(() => loadStorage('addedTeachers', []));
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => loadStorage('auditLogs', initialAuditLogs));
   const [notifications, setNotifications] = useState<NotificationItem[]>(() =>
     loadStorage('notifications', initialNotifications)
@@ -205,16 +289,20 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => saveStorage('curriculumDays', curriculumDays), [curriculumDays]);
   useEffect(() => saveStorage('lostTeachingDays', lostTeachingDays), [lostTeachingDays]);
   useEffect(() => saveStorage('crossCurricularProposals', crossCurricularProposals), [crossCurricularProposals]);
-  useEffect(() => saveStorage('homeworkRemediations', homeworkRemediations), [homeworkRemediations]);
+  useEffect(() => saveStorage('homeworkRemediationsV2', homeworkRemediations), [homeworkRemediations]);
+  useEffect(() => saveStorage('answerSheetUploads', answerSheetUploads), [answerSheetUploads]);
+  useEffect(() => saveStorage('sheetAssignments', sheetAssignments), [sheetAssignments]);
+  useEffect(() => saveStorage('addedTeachers', addedTeachers), [addedTeachers]);
   useEffect(() => saveStorage('auditLogs', auditLogs), [auditLogs]);
   useEffect(() => saveStorage('notifications', notifications), [notifications]);
   useEffect(() => saveStorage('sourceDocuments', sourceDocuments), [sourceDocuments]);
   useEffect(() => saveStorage('questionBank', questionBank), [questionBank]);
 
-  // Hydrate source documents and question bank from backend when token is available
+  // Hydrate source documents and question bank from backend (educators only: learners have no access)
+  const educator = !!planningUser && ['developer', 'admin', 'principal', 'teacher'].includes(planningUser.role);
   useEffect(() => {
     const token = localStorage.getItem('lumeneios_token');
-    if (!token) return;
+    if (!token || !educator) return;
     apiClient.documents
       .list(undefined, 'source_material')
       .then((docs) => {
@@ -231,7 +319,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       })
       .catch(() => {});
-  }, []);
+  }, [educator, workspaceKey]);
 
   const addSchool = (schoolData: Partial<School>) => {
     const newSchool: School = {
@@ -253,6 +341,105 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSchools((prev) => [newSchool, ...prev]);
 
     addAuditLog('Onboarded New School', `Added ${newSchool.name} to state network.`, 'system');
+  };
+
+  const addClass = (schoolId: string, rawName: string): { ok: true; name: string } | { ok: false; error: string } => {
+    const parsed = parseClassName(rawName);
+    if (!parsed.ok) return parsed;
+    const duplicate = classes.some(
+      (item) => item.schoolId === schoolId && classIdentity(item.name) === parsed.identity
+    );
+    if (duplicate) return { ok: false, error: 'A class with this name already exists' };
+    const created: ClassSection = {
+      id: `class-${Date.now()}`,
+      schoolId,
+      grade: parsed.grade,
+      section: parsed.section,
+      name: parsed.display,
+      classTeacherId: '',
+      classTeacherName: 'Unassigned',
+      studentCount: 0,
+      subjectIds: [],
+    };
+    setClasses((prev) => [...prev, created]);
+    setSchools((prev) =>
+      prev.map((school) =>
+        school.id === schoolId ? { ...school, classCount: school.classCount + 1 } : school
+      )
+    );
+    addAuditLog('Class Created', `Added ${created.name}.`, 'curriculum');
+    return { ok: true, name: created.name };
+  };
+
+  const addTeacher = (input: {
+    name: string;
+    email: string;
+    designation: string;
+    schoolId: string;
+    existingEmails: string[];
+  }): { ok: true; teacher: User } | { ok: false; error: string } => {
+    const name = input.name.trim();
+    const email = input.email.trim().toLowerCase();
+    const designation = input.designation.trim();
+    if (!name) return { ok: false, error: "Enter the teacher's name." };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: 'Enter a valid email.' };
+    const known = new Set([
+      ...input.existingEmails.map((item) => item.toLowerCase()),
+      ...addedTeachers.map((item) => item.email.toLowerCase()),
+    ]);
+    if (known.has(email)) return { ok: false, error: 'A user with this email already exists.' };
+    const teacher: User = {
+      id: `user-teacher-${Date.now()}`,
+      name,
+      email,
+      role: 'teacher',
+      schoolId: input.schoolId,
+      designation: designation || 'Teacher',
+      assignedClassIds: [],
+      assignedSubjectIds: [],
+    };
+    setAddedTeachers((prev) => [teacher, ...prev]);
+    addAuditLog('Teacher Added', `Added ${teacher.name} (${teacher.email}).`, 'user');
+    return { ok: true, teacher };
+  };
+
+  const addStudent = (studentData: {
+    name: string;
+    rollNo: number;
+    gender: 'M' | 'F' | 'Other';
+    classId: string;
+    schoolId: string;
+  }) => {
+    const classSection = classes.find((item) => item.id === studentData.classId);
+    const blankScores = { LU: 0, CU: 0, AU: 0, CT: 0, overall: 0 };
+    const newStudent: Student = {
+      id: `student-${Date.now()}`,
+      schoolId: studentData.schoolId,
+      classId: studentData.classId,
+      className: classSection?.name || 'Unassigned',
+      name: studentData.name.trim(),
+      rollNo: Number(studentData.rollNo),
+      gender: studentData.gender,
+      attendancePct: 100,
+      competencies: blankScores,
+      baselineCompetencies: blankScores,
+      learningModality: 'Visual',
+      parentId: '',
+      homeworkCompletionRate: 0,
+      needsSupport: false,
+    };
+    setStudents((prev) => [newStudent, ...prev]);
+    setSchools((prev) =>
+      prev.map((school) =>
+        school.id === newStudent.schoolId ? { ...school, studentCount: school.studentCount + 1 } : school
+      )
+    );
+    setClasses((prev) =>
+      prev.map((item) =>
+        item.id === newStudent.classId ? { ...item, studentCount: item.studentCount + 1 } : item
+      )
+    );
+    addAuditLog('Added Student', `Added ${newStudent.name} to ${newStudent.className}.`, 'user');
   };
 
   const updateSchool = (id: string, updates: Partial<School>) => {
@@ -309,34 +496,48 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
       type: 'warning',
       read: false,
       createdAt: 'Just now',
-      link: '/teacher/time-aware',
+      link: '/teacher/dashboard',
     };
     setNotifications((prev) => [newNotif, ...prev]);
   };
 
-  const addAssessment = (assessmentData: Omit<Assessment, 'id'>) => {
+  const addAssessment = async (assessmentData: Omit<Assessment, 'id'>) => {
+    const saved = await apiClient.assessments.create(assessmentData.classId, {
+      subject_id: assessmentData.subjectId,
+      title: assessmentData.title,
+      cycle_number: assessmentData.cycleNumber,
+      date: assessmentData.date,
+      duration_minutes: assessmentData.durationMinutes,
+      total_marks: assessmentData.totalMarks,
+      competency_focus: assessmentData.competencyFocus,
+      questions: assessmentData.questions.map((question) => ({
+        id: question.id,
+        text: question.text,
+        type: question.type,
+        options: question.options,
+        correct_answer: question.correctAnswer,
+        marking_rubric: question.markingRubric,
+        marks: question.marks,
+        competency: question.competency,
+        bloom_level: question.bloomLevel,
+        source_document_ids: question.sourceDocumentIds,
+        source_document_names: question.sourceDocumentNames,
+        is_ai_generated: question.isAiGenerated,
+        kc_mappings: question.kcMappings?.map((item) => ({
+          kc_id: item.kcId,
+          relevance: item.relevance,
+        })),
+      })),
+    });
     const newAsm: Assessment = {
       ...assessmentData,
-      id: `asm-${Date.now()}`,
+      id: saved.id,
+      schoolId: saved.school_id,
+      // Keep the assigned paper and answer key in the backend.
+      questions: [],
     };
     setAssessments((prev) => [newAsm, ...prev]);
     addAuditLog('Created Assessment Cycle', `Created assessment: "${newAsm.title}".`, 'assessment');
-
-    // Sync with backend API
-    apiClient.assessments
-      .create(newAsm.classId, {
-        subject_id: newAsm.subjectId,
-        title: newAsm.title,
-        cycle_number: newAsm.cycleNumber,
-        date: newAsm.date,
-        duration_minutes: newAsm.durationMinutes,
-        total_marks: newAsm.totalMarks,
-        competency_focus: newAsm.competencyFocus,
-        questions: newAsm.questions,
-      })
-      .catch((err) => {
-        console.warn('Backend assessment sync notice:', err.message);
-      });
   };
 
   const gradeAssessmentResult = (resultData: Omit<AssessmentResult, 'id'>) => {
@@ -463,9 +664,38 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const submitStudentHomework = (id: string) => {
     setHomeworkRemediations((prev) =>
-      prev.map((h) => (h.id === id ? { ...h, status: 'submitted', score: 92 } : h))
+      prev.map((h) => (h.id === id ? { ...h, status: 'submitted', submittedAt: new Date().toISOString(), score: 92 } : h))
     );
     addAuditLog('Student Homework Submitted', `Student completed remediation task #${id}.`, 'assessment');
+  };
+
+  const addSheetAssignment = (item: Omit<SheetAssignment, 'id' | 'createdAt'>) => {
+    const assignment: SheetAssignment = {
+      ...item,
+      id: `assign-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+    };
+    setSheetAssignments((prev) => [assignment, ...prev]);
+    addAuditLog(
+      'Assignment Given',
+      `${assignment.teacherName} gave "${assignment.title}" to ${assignment.className}.`,
+      'assessment'
+    );
+  };
+
+  const addAnswerSheetUpload = (item: Omit<AnswerSheetUpload, 'id' | 'uploadedAt'>) => {
+    const upload: AnswerSheetUpload = {
+      ...item,
+      id: `sheet-${Date.now()}`,
+      uploadedAt: new Date().toISOString(),
+    };
+    setAnswerSheetUploads((prev) => [upload, ...prev]);
+    addAuditLog(
+      'Answer Sheet Uploaded',
+      `${upload.studentName} uploaded ${upload.fileName} for demo OCR review.`,
+      'assessment'
+    );
+    return upload;
   };
 
   const markNotificationAsRead = (id: string) => {
@@ -509,26 +739,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const updateBankQuestion = (id: string, updates: Partial<Question>) => {
-    setQuestionBank((prev) => prev.map((q) => (q.id === id ? { ...q, ...updates } : q)));
-    setAssessments((prev) =>
-      prev.map((asm) => ({
-        ...asm,
-        questions: asm.questions.map((q) => (q.id === id ? { ...q, ...updates } : q)),
-      }))
-    );
-    apiClient.assessments.updateQuestion(id, updates).catch(() => {});
+  const updateBankQuestion = async (id: string, updates: Partial<Question>) => {
+    const saved = await apiClient.assessments.updateQuestion(id, updates);
+    setQuestionBank((prev) => prev.map((q) => q.id === id ? saved : q));
   };
 
-  const deleteBankQuestion = (id: string) => {
+  const deleteBankQuestion = async (id: string) => {
+    await apiClient.assessments.deleteQuestion(id);
     setQuestionBank((prev) => prev.filter((q) => q.id !== id));
-    setAssessments((prev) =>
-      prev.map((asm) => ({
-        ...asm,
-        questions: asm.questions.filter((q) => q.id !== id),
-      }))
-    );
-    apiClient.assessments.deleteQuestion(id).catch(() => {});
   };
 
   const attachQuestionsToAssessment = (assessmentId: string, questions: Question[]) => {
@@ -577,6 +795,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLostTeachingDays(initialLostTeachingDays);
     setCrossCurricularProposals(initialCrossCurricularProposals);
     setHomeworkRemediations(initialHomeworkRemediations);
+    setAnswerSheetUploads([]);
+    setSheetAssignments(initialSheetAssignments);
+    setAddedTeachers([]);
     setAuditLogs(initialAuditLogs);
     setNotifications(initialNotifications);
     setSourceDocuments(initialSourceDocuments);
@@ -586,6 +807,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
   return (
     <DataContext.Provider
       value={{
+        planning,
         schools,
         classes,
         subjects,
@@ -596,12 +818,24 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         lostTeachingDays,
         crossCurricularProposals,
         homeworkRemediations,
+        answerSheetUploads,
+        sheetAssignments,
         auditLogs,
         notifications,
         sourceDocuments,
         questionBank,
+        workspace,
+        workspaceLoading,
+        teachers: workspace?.teachers ?? [],
+        teacherAssignments: workspace?.teacherAssignments ?? [],
+        snapshots: workspace?.snapshots ?? [],
+        refreshWorkspace,
         addSchool,
         updateSchool,
+        addStudent,
+        addClass,
+        addedTeachers,
+        addTeacher,
         assignTeacherToClass,
         recordLostTeachingDay,
         addAssessment,
@@ -611,6 +845,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         rejectCrossCurricularProposal,
         assignHomeworkRemediation,
         submitStudentHomework,
+        addAnswerSheetUpload,
+        addSheetAssignment,
         markNotificationAsRead,
         addSourceDocuments,
         removeSourceDocument,

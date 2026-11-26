@@ -1,0 +1,34 @@
+/*
+ * Presentation interface. Colors still come from the selected theme.
+ * This layer only changes type, shape, and the page wash.
+ */
+
+html[data-ui='presentation'] .min-h-screen.bg-surface-bg {
+  background:
+    radial-gradient(120% 70% at 100% 0%, rgb(231 177 90 / 0.28), transparent 42%),
+    rgb(var(--surface-bg));
+}
+
+html[data-ui='presentation'] h1,
+html[data-ui='presentation'] h2,
+html[data-ui='presentation'] h3 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+}
+
+html[data-ui='presentation'] .rounded-xl {
+  border-radius: 16px;
+}
+
+html[data-ui='presentation'] .rounded-2xl {
+  border-radius: 22px;
+}
+
+html[data-ui='presentation'] aside nav a {
+  border-radius: 999px;
+}
+
+html[data-ui='presentation'] aside .rounded-xl {
+  border-radius: 999px;
+}

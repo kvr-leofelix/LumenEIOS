@@ -3,12 +3,14 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Enum as SQLEnum,
     JSON
 )
@@ -29,6 +31,8 @@ class User(Base):
 
     id = Column(String(64), primary_key=True, default=generate_uuid)
     email = Column(String(255), unique=True, index=True, nullable=False)
+    # Optional short login (admission number for students, staff code for teachers, mobile for parents).
+    username = Column(String(100), unique=True, index=True, nullable=True)
     name = Column(String(255), nullable=False)
     hashed_password = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, index=True)  # admin, principal, teacher, student, parent
@@ -39,6 +43,15 @@ class User(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     memberships = relationship("SchoolMembership", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    phone = Column(String(40), nullable=True)
+    address = Column(Text, nullable=True)
+    date_of_birth = Column(Date, nullable=True)
 
 
 class School(Base):
@@ -112,6 +125,8 @@ class Student(Base):
     class_name = Column(String(100), nullable=False)
     name = Column(String(255), nullable=False, index=True)
     roll_no = Column(Integer, nullable=False)
+    admission_no = Column(String(32), nullable=True, index=True)
+    date_of_birth = Column(String(10), nullable=True)  # YYYY-MM-DD
     gender = Column(String(20), default="Other", nullable=False)
     attendance_pct = Column(Float, default=90.0, nullable=False)
     
@@ -134,6 +149,18 @@ class Student(Base):
     homework_completion_rate = Column(Float, default=85.0, nullable=False)
     needs_support = Column(Boolean, default=False, nullable=False)
     support_area = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+
+
+class StudentOcrHistory(Base):
+    __tablename__ = "student_ocr_history"
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    student_id = Column(String(64), ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_name = Column(String(255), nullable=False)
+    extracted_text = Column(Text, nullable=False)
+    pages_processed = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=utc_now, nullable=False)
 
 
@@ -177,6 +204,14 @@ class Assessment(Base):
     created_at = Column(DateTime, default=utc_now, nullable=False)
 
 
+
+class AssignmentOcrUpload(Base):
+    __tablename__ = "assignment_ocr_uploads"
+
+    history_id = Column(String(64), ForeignKey("student_ocr_history.id", ondelete="CASCADE"), primary_key=True)
+    assessment_id = Column(String(64), ForeignKey("assessments.id", ondelete="CASCADE"), nullable=False, index=True)
+
+
 class AssessmentSubmission(Base):
     __tablename__ = "assessment_submissions"
 
@@ -211,6 +246,10 @@ class StudentCompetencySnapshot(Base):
     ct_score = Column(Integer, nullable=False)
     overall_score = Column(Integer, nullable=False)
     notes = Column(Text, nullable=True)
+    # Forward-compatible subject linkage. Historical rows stay NULL (global / unscoped).
+    subject_id = Column(String(64), nullable=True, index=True)
+    source_assessment_id = Column(String(64), nullable=True, index=True)
+    source_submission_id = Column(String(64), nullable=True, index=True)
 
 
 class HomeworkRemediation(Base):
@@ -405,8 +444,14 @@ class Announcement(Base):
     sender_name = Column(String(255), nullable=False)
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
-    target_role = Column(String(50), default="teacher", nullable=False)
+    target_role = Column(String(50), default="teacher", nullable=False)  # legacy single-role target ("all" = everyone)
     created_at = Column(DateTime, default=utc_now, nullable=False)
+    # Broadcast fields (all optional, so older rows keep working):
+    sender_role = Column(String(50), nullable=True)
+    audience_json = Column(JSON, nullable=True)  # roles reached: any of teacher, student, parent, principal
+    class_ids_json = Column(JSON, nullable=True)  # limits students/parents to these classes; null = every class the sender may reach
+    event_start = Column(String(10), nullable=True)  # ISO date; set when the announcement is marked on the calendar
+    event_end = Column(String(10), nullable=True)
 
 
 class AuditEvent(Base):
@@ -437,6 +482,11 @@ class QuestionBankItem(Base):
     marks = Column(Integer, default=2, nullable=False)
     competency = Column(String(20), default="CU", nullable=False)  # LU, CU, AU, CT
     bloom_level = Column(String(50), default="Understand", nullable=False)
+    # Chapter / topic the question belongs to (free text, e.g. "Mensuration"). Lets Differentiated
+    # Homework limit selection to what the class is studying. Null for older, untagged questions.
+    topic = Column(String(255), nullable=True, index=True)
+    # Class/grade the question is written for (6, 7, 8 ...). Null = any grade (older questions).
+    grade = Column(Integer, nullable=True, index=True)
     source_document_ids_json = Column(JSON, default=list, nullable=False)
     source_document_names_json = Column(JSON, default=list, nullable=False)
     is_ai_generated = Column(Boolean, default=False, nullable=False)
@@ -500,3 +550,100 @@ class GradingBatchItem(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class SchoolFeatureFlag(Base):
+    __tablename__ = "school_feature_flags"
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    school_id = Column(String(64), ForeignKey("schools.id", ondelete="CASCADE"), nullable=False, index=True)
+    flag_key = Column(String(64), nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+
+
+class CompetencyOutcome(Base):
+    __tablename__ = "competency_outcomes"
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    code = Column(String(32), unique=True, nullable=False)
+    domain = Column(String(8), nullable=False)
+    grade = Column(Integer, nullable=False)
+    statement = Column(Text, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class ImpersonationEvent(Base):
+    __tablename__ = "impersonation_events"
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    actor_user_id = Column(String(64), nullable=False)
+    actor_name = Column(String(255), nullable=False)
+    from_role = Column(String(50), nullable=False)
+    to_role = Column(String(50), nullable=False)
+    school_id = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+
+class WorkshopRun(Base):
+    __tablename__ = "workshop_runs"
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    kind = Column(String(20), nullable=False)
+    prompt = Column(Text, nullable=False)
+    result_json = Column(JSON, nullable=False)
+    status = Column(String(20), default="completed", nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+
+class LearningIntervention(Base):
+    """AI-assisted learning intervention proposal (never verified competency evidence)."""
+
+    __tablename__ = "learning_interventions"
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    school_id = Column(String(64), nullable=False, index=True)
+    student_id = Column(String(64), ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    subject_id = Column(String(64), nullable=False, index=True)
+    competency = Column(String(20), nullable=False)  # LU, CU, AU, CT
+    finding_kind = Column(String(64), nullable=True)
+    gap_summary = Column(Text, nullable=False)
+    evidence_refs_json = Column(JSON, default=list, nullable=False)
+    baseline_score = Column(Float, nullable=True)
+    baseline_checkpoint_json = Column(JSON, default=dict, nullable=False)
+    learning_objective = Column(Text, nullable=False, default="")
+    recommended_activities_json = Column(JSON, default=list, nullable=False)
+    suggested_duration_days = Column(Integer, nullable=True)
+    practice_recommendation_json = Column(JSON, default=dict, nullable=False)
+    expected_outcome = Column(Text, nullable=False, default="")
+    reassessment_criteria = Column(Text, nullable=False, default="")
+    ai_provider = Column(String(50), nullable=True)
+    ai_model = Column(String(100), nullable=True)
+    ai_generated = Column(Boolean, default=True, nullable=False)
+    teacher_edited = Column(Boolean, default=False, nullable=False)
+    status = Column(String(50), default="pending_review", nullable=False, index=True)
+    created_by_user_id = Column(String(64), nullable=False)
+    reviewed_by_user_id = Column(String(64), nullable=True)
+    review_notes = Column(Text, nullable=True)
+    assigned_homework_id = Column(String(64), nullable=True, index=True)
+    follow_up_evidence_refs_json = Column(JSON, default=list, nullable=False)
+    follow_up_checkpoint_json = Column(JSON, default=dict, nullable=False)
+    outcome_status = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+    reviewed_at = Column(DateTime, nullable=True)
+    assigned_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
+
+class TeacherAssignment(Base):
+    """Which teacher teaches which subject to which class section (the school timetable allocation)."""
+
+    __tablename__ = "teacher_assignments"
+    __table_args__ = (UniqueConstraint("teacher_id", "class_id", "subject_id", name="uq_teacher_class_subject"),)
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    teacher_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    school_id = Column(String(64), ForeignKey("schools.id", ondelete="CASCADE"), nullable=False, index=True)
+    class_id = Column(String(64), ForeignKey("classes.id", ondelete="CASCADE"), nullable=False, index=True)
+    subject_id = Column(String(64), ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)

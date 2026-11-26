@@ -5,11 +5,11 @@ from pathlib import Path
 import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from backend.app.api.dependencies import get_current_user, require_roles
+from backend.app.api.dependencies import require_school_access, get_current_user, require_roles, user_school_ids
 from backend.app.core.config import settings
 from backend.app.db.session import get_db
 from backend.app.models.entities import (
@@ -20,7 +20,9 @@ from backend.app.models.entities import (
     GradingBatchItem,
     Assessment,
     AssessmentSubmission,
+    AssignmentOcrUpload,
     Student,
+    StudentOcrHistory,
     StudentCompetencySnapshot,
     DatasetExample,
     User,
@@ -31,19 +33,36 @@ from backend.app.schemas.ocr import (
     OCRRunOut,
     OCRPreviewOut,
     OCRAnswerRegion,
+    StudentOcrHistoryOut,
     HumanReviewRequest,
     HumanReviewOut,
     BatchItemOut,
     GradingBatchOut,
     BatchItemUpdateRequest,
 )
+from backend.app.schemas.evaluation import EvaluationResult, StudentInfo
+from backend.app.services.ai_gateway import (
+    AIGatewayError,
+    AINotConfigured,
+    AIProviderTimeout,
+    QwenTextProvider,
+    active_gemini_model,
+    get_ai_provider,
+)
+from backend.app.services.evaluation_service import build_evaluation_messages, harden_evaluation, parse_and_validate_evaluation
+from backend.app.services.kc_graph_service import record_knowledge_graph
+from backend.app.services.gemini_ocr_service import OCRInputError, extract_gemini_text
 from backend.app.services.ocr_service import (
     QwenOCRInferenceError,
     QwenOCRInputError,
     QwenOCRUnavailableError,
     get_ocr_provider,
+    qwen_model,
 )
+from backend.app.services.progress import report_progress, stream_job
 from backend.app.services.storage_service import storage_service
+from backend.app.services.assessment_audience import upload_assignments
+from backend.app.modules.differentiated_homework.student_access import require_linked_student
 from backend.app.services.batch_grading_service import (
     match_student_from_filename_or_text,
     run_grading_batch_job,
@@ -65,20 +84,157 @@ class ProcessOCRRequest(BaseModel):
     provider: str = "simulated"
 
 
+class EvaluateScanRequest(BaseModel):
+    assessment_id: str
+    extracted_text: str = Field(min_length=1, max_length=100_000)
+    history_id: Optional[str] = None
+    provider: str = "qwen"
+
+
+def _model_choice(provider: str) -> str:
+    chosen = (provider or "qwen").strip().lower()
+    if chosen not in {"gemini", "qwen"}:
+        raise HTTPException(status_code=422, detail="Choose Qwen (default) or Gemini (fallback).")
+    return chosen
+
+
+@router.post("/evaluate-scan", response_model=EvaluationResult)
+async def evaluate_scan(
+    req: EvaluateScanRequest,
+    db: AsyncSession = Depends(get_db),
+    educator: User = Depends(require_roles("teacher", authenticated=True)),
+):
+    extracted_text = req.extracted_text.strip()
+    provider_name = _model_choice(req.provider)
+    if not extracted_text:
+        raise HTTPException(status_code=422, detail="Enter the extracted answers before evaluating.")
+
+    _, rows = await upload_assignments(db, educator, req.assessment_id)
+    assessment, section, subject = rows[0]
+    questions = []
+    for index, question in enumerate(assessment.questions_json or [], start=1):
+        answer = question.get("correct_answer") or question.get("correctAnswer") or ""
+        rubric = question.get("marking_rubric") or question.get("markingRubric") or ""
+        marks = question.get("marks")
+        competency = question.get("competency")
+        if (
+            not (str(answer).strip() or str(rubric).strip())
+            or not isinstance(marks, (int, float))
+            or marks <= 0
+            or competency not in ("LU", "CU", "AU", "CT")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Question {index} needs an answer key or rubric, positive marks, and a competency.",
+            )
+        prepared = {
+            "id": str(index),
+            "text": question["text"],
+            "options": question.get("options") or [],
+            "max_marks": marks,
+            "competency": competency,
+            "correct_answer": answer,
+            "marking_rubric": rubric,
+        }
+        if isinstance(question.get("kc_mappings"), list):
+            prepared["kc_mappings"] = question["kc_mappings"]
+        questions.append(prepared)
+    if not questions:
+        raise HTTPException(status_code=422, detail="This assignment has no questions to evaluate.")
+
+    system, prompt = build_evaluation_messages(subject.name, assessment.title, str(section.grade), questions, extracted_text)
+    graph_context = {
+        "assessment_id": assessment.id,
+        "school_id": assessment.school_id,
+        "class_id": assessment.class_id,
+        "subject_id": subject.id,
+        "subject_name": subject.name,
+        "questions": questions,
+        "extracted_text": extracted_text,
+        "history_id": req.history_id,
+        "provider": provider_name,
+    }
+    await db.rollback()
+    try:
+        generator = QwenTextProvider() if provider_name == "qwen" else get_ai_provider()
+        raw = await generator.generate_json(system=system, prompt=prompt, schema=EvaluationResult)
+        result = parse_and_validate_evaluation(raw)
+        by_id = {item.question_id: item for item in result.question_evaluations}
+        if len(result.question_evaluations) != len(questions) or by_id.keys() != {q["id"] for q in questions}:
+            raise ValueError("Evaluation did not match the official question list.")
+        ordered = []
+        for index, question in enumerate(questions, start=1):
+            item = by_id[question["id"]]
+            if item.max_marks != question["max_marks"] or item.competency != question["competency"]:
+                raise ValueError("Evaluation did not match the official marks or competency.")
+            item.question_index = index
+            item.question_text = question["text"]
+            ordered.append(item)
+        result.question_evaluations = ordered
+        result = harden_evaluation(result, questions, extracted_text)
+        result.student_info = StudentInfo()
+        await record_knowledge_graph(db, graph_context, result)
+        return result
+    except AIGatewayError as exc:
+        code = 503 if isinstance(exc, AINotConfigured) else 504 if isinstance(exc, AIProviderTimeout) else 502
+        raise HTTPException(status_code=code, detail=exc.public_message) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="The evaluation could not be matched to the assignment. Try again.") from exc
+
+
+@router.get("/history", response_model=List[StudentOcrHistoryOut])
+async def get_student_ocr_history(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles("student", authenticated=True)),
+):
+    student = await require_linked_student(db, current_user)
+    result = await db.execute(
+        select(StudentOcrHistory, Assessment.title)
+        .outerjoin(AssignmentOcrUpload, AssignmentOcrUpload.history_id == StudentOcrHistory.id)
+        .outerjoin(Assessment, Assessment.id == AssignmentOcrUpload.assessment_id)
+        .where(StudentOcrHistory.student_id == student.id)
+        .order_by(StudentOcrHistory.created_at.desc(), StudentOcrHistory.id.desc())
+    )
+    return [
+        StudentOcrHistoryOut.model_validate(entry).model_copy(update={"assignment_title": title})
+        for entry, title in result
+    ]
+
+
 @router.post("/extract-preview", response_model=OCRPreviewOut)
 async def extract_ocr_preview(
     files: List[UploadFile] = File(...),
     wait_before_each_image: bool = Form(False),
-    educator: User = Depends(require_roles("admin", "principal", "teacher")),
+    current_user: User = Depends(require_roles("admin", "principal", "teacher", "student")),
+    db: AsyncSession = Depends(get_db),
+    assessment_id: str | None = Form(None),
+    provider: str = Form("qwen"),
 ):
+    provider_name = _model_choice(provider)
     if not files:
         raise HTTPException(status_code=400, detail="Please select at least one image or PDF.")
     if len(files) > 50:
         raise HTTPException(status_code=400, detail="Maximum upload size is 50 files at a time.")
 
-    provider = get_ocr_provider("qwen")
+    student_id = None
+    if assessment_id is not None:
+        student, _ = await upload_assignments(db, current_user, assessment_id)
+        student_id = student.id if student else None
+        await db.rollback()
+    elif current_user.role == "student":
+        student_id = (await require_linked_student(db, current_user)).id
+        # Release the read transaction while the model processes the upload.
+        await db.rollback()
+
     results = []
-    for file in files:
+    total_files = len(files)
+    for index, file in enumerate(files, start=1):
+        report_progress(
+            "file",
+            f"Opening {file.filename or 'file'} ({index} of {total_files})",
+            index - 1,
+            total_files,
+        )
         extension = os.path.splitext((file.filename or "").lower())[1]
         if (
             extension not in OCR_PREVIEW_EXTENSIONS
@@ -100,23 +256,45 @@ async def extract_ocr_preview(
                     detail=f"Unsupported OCR file '{detail['file_name']}'. Upload JPG, PNG, or PDF.",
                 )
 
-            extraction = await provider.extract_document(
-                detail["storage_path"],
-                {"buffer_seconds": 5 if wait_before_each_image else 0},
-            )
+            if provider_name == "qwen":
+                extraction = await qwen_model.extract_document(
+                    detail["storage_path"],
+                    {
+                        "buffer_seconds": 5 if wait_before_each_image else 0,
+                        "file_name": detail["file_name"],
+                    },
+                )
+                extracted_text = extraction["extracted_text"]
+                pages_processed = extraction["pages_processed"]
+            else:
+                extracted_text, pages_processed = await extract_gemini_text(
+                    Path(detail["storage_path"]),
+                    file_name=detail["file_name"],
+                    mime_type=detail["mime_type"],
+                    wait_before_each_image=wait_before_each_image,
+                )
             results.append(
                 {
                     "file_name": detail["file_name"],
-                    "extracted_text": extraction["extracted_text"],
-                    "pages_processed": extraction["pages_processed"],
+                    "extracted_text": extracted_text,
+                    "pages_processed": pages_processed,
                 }
             )
+            report_progress(
+                "file",
+                f"Finished {detail['file_name']} ({index} of {total_files})",
+                index,
+                total_files,
+            )
+        except (OCRInputError, QwenOCRInputError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except QwenOCRUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except QwenOCRInputError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except QwenOCRInferenceError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except AIGatewayError as exc:
+            code = 503 if isinstance(exc, AINotConfigured) else 504 if isinstance(exc, AIProviderTimeout) else 502
+            raise HTTPException(status_code=code, detail=exc.public_message) from exc
         except HTTPException:
             raise
         except Exception as exc:
@@ -129,11 +307,85 @@ async def extract_ocr_preview(
         finally:
             Path(detail["storage_path"]).unlink(missing_ok=True)
 
+    if student_id:
+        history_rows = [StudentOcrHistory(student_id=student_id, **item) for item in results]
+        db.add_all(history_rows)
+        if assessment_id is not None:
+            await db.flush()
+            db.add_all(
+                AssignmentOcrUpload(history_id=entry.id, assessment_id=assessment_id) for entry in history_rows
+            )
+        await db.commit()
+
     return {
-        "provider": "qwen2.5-vl",
-        "model_version": settings.QWEN_VL_MODEL_ID,
+        "provider": provider_name,
+        "model_version": settings.QWEN_VL_MODEL_ID if provider_name == "qwen" else active_gemini_model(),
         "results": results,
     }
+
+
+@router.post("/extract-preview/stream")
+async def stream_extract_ocr_preview(
+    files: List[UploadFile] = File(...),
+    wait_before_each_image: bool = Form(False),
+    current_user: User = Depends(require_roles("admin", "principal", "teacher", "student")),
+    db: AsyncSession = Depends(get_db),
+    assessment_id: str | None = Form(None),
+    provider: str = Form("qwen"),
+):
+    return stream_job(lambda: extract_ocr_preview(
+        files, wait_before_each_image, current_user, db, assessment_id, provider,
+    ))
+
+
+EDUCATOR_ROLES = ("admin", "principal", "teacher")
+
+
+def _require_simulation_allowed() -> None:
+    """The legacy batch engine and /process grade with simulated output; never present that as real."""
+    if not settings.DEMO_MODE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Simulated OCR grading is only available in demo mode. Use Scan Review for real OCR.",
+        )
+
+
+async def _educator_batch(db: AsyncSession, batch_id: str, user: User) -> GradingBatch:
+    """Load a batch the educator may see. Foreign-school or inconsistent batches are reported as missing."""
+    if user.role not in EDUCATOR_ROLES:
+        raise HTTPException(status_code=403, detail="Only educators can open grading batches.")
+    batch = (await db.execute(select(GradingBatch).filter(GradingBatch.id == batch_id))).scalars().first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Grading batch not found.")
+    if user.role != "admin" and batch.school_id not in await user_school_ids(db, user):
+        raise HTTPException(status_code=404, detail="Grading batch not found.")
+    assessment = (
+        await db.execute(select(Assessment).filter(Assessment.id == batch.assessment_id))
+    ).scalars().first()
+    if (
+        not assessment
+        or assessment.school_id != batch.school_id
+        or (assessment.class_id and assessment.class_id != batch.class_id)
+    ):
+        # Fail closed: a batch whose assessment is missing or belongs elsewhere is not shown to anyone.
+        raise HTTPException(status_code=404, detail="Grading batch not found.")
+    return batch
+
+
+async def _educator_batch_item(
+    db: AsyncSession, batch_id: str, item_id: str, user: User
+) -> tuple[GradingBatch, GradingBatchItem]:
+    batch = await _educator_batch(db, batch_id, user)
+    item = (
+        await db.execute(
+            select(GradingBatchItem).filter(
+                GradingBatchItem.id == item_id, GradingBatchItem.batch_id == batch_id
+            )
+        )
+    ).scalars().first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Batch item not found.")
+    return batch, item
 
 
 @router.post("/process", response_model=OCRRunOut)
@@ -142,16 +394,19 @@ async def process_ocr(
     db: AsyncSession = Depends(get_db),
     educator: User = Depends(require_roles("admin", "principal", "teacher")),
 ):
-    if req.provider == "qwen":
+    _require_simulation_allowed()
+    if req.provider in {"qwen", "gemini"}:
         raise HTTPException(
             status_code=400,
-            detail="Qwen returns text only, without answer regions. Use POST /ocr/extract-preview.",
+            detail="Text-only OCR uses POST /ocr/extract-preview.",
         )
 
     doc_res = await db.execute(select(Document).filter(Document.id == req.document_id))
     doc = doc_res.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
+    # A document from another school is reported exactly like a missing one.
+    await require_school_access(db, educator, doc.school_id)
 
     provider = get_ocr_provider(req.provider)
     extraction = await provider.extract_document(doc.storage_path)
@@ -180,7 +435,7 @@ async def process_ocr(
     )
 
 
-@router.post("/review/verify", response_model=HumanReviewOut)
+@router.post("/review/verify", response_model=HumanReviewOut, dependencies=[Depends(_require_simulation_allowed)])
 async def verify_human_review(
     req: HumanReviewRequest,
     db: AsyncSession = Depends(get_db),
@@ -533,11 +788,11 @@ async def list_grading_batches(
     assessment_id: Optional[str] = Query(None),
     class_id: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(*EDUCATOR_ROLES)),
 ):
     query = select(GradingBatch)
-    if current_user.role != "admin" and current_user.school_id:
-        query = query.filter(GradingBatch.school_id == current_user.school_id)
+    if current_user.role != "admin":
+        query = query.filter(GradingBatch.school_id.in_(await user_school_ids(db, current_user)))
     if assessment_id:
         query = query.filter(GradingBatch.assessment_id == assessment_id)
     if class_id:
@@ -553,11 +808,7 @@ async def get_grading_batch(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    res = await db.execute(select(GradingBatch).filter(GradingBatch.id == batch_id))
-    batch = res.scalars().first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Grading batch not found.")
-    return await _serialize_batch(db, batch)
+    return await _serialize_batch(db, await _educator_batch(db, batch_id, current_user))
 
 
 @router.post("/batches/{batch_id}/start", response_model=GradingBatchOut)
@@ -570,10 +821,8 @@ async def start_grading_batch(
     """
     Confirms and starts asynchronous background processing for all valid uploaded papers in the batch.
     """
-    res = await db.execute(select(GradingBatch).filter(GradingBatch.id == batch_id))
-    batch = res.scalars().first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Grading batch not found.")
+    _require_simulation_allowed()
+    batch = await _educator_batch(db, batch_id, educator)
 
     if batch.valid_files == 0:
         raise HTTPException(status_code=400, detail="No valid answer sheets in this batch to process.")
@@ -597,10 +846,7 @@ async def cancel_grading_batch(
     db: AsyncSession = Depends(get_db),
     educator: User = Depends(require_roles("admin", "principal", "teacher")),
 ):
-    res = await db.execute(select(GradingBatch).filter(GradingBatch.id == batch_id))
-    batch = res.scalars().first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Grading batch not found.")
+    batch = await _educator_batch(db, batch_id, educator)
 
     cancel_batch_job(batch_id)
 
@@ -626,15 +872,7 @@ async def remove_batch_item(
     db: AsyncSession = Depends(get_db),
     educator: User = Depends(require_roles("admin", "principal", "teacher")),
 ):
-    res = await db.execute(
-        select(GradingBatchItem).filter(
-            GradingBatchItem.id == item_id,
-            GradingBatchItem.batch_id == batch_id,
-        )
-    )
-    item = res.scalars().first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Batch item not found.")
+    _, item = await _educator_batch_item(db, batch_id, item_id, educator)
 
     await db.delete(item)
     await db.commit()
@@ -654,15 +892,8 @@ async def retry_batch_item(
     db: AsyncSession = Depends(get_db),
     educator: User = Depends(require_roles("admin", "principal", "teacher")),
 ):
-    res = await db.execute(
-        select(GradingBatchItem).filter(
-            GradingBatchItem.id == item_id,
-            GradingBatchItem.batch_id == batch_id,
-        )
-    )
-    item = res.scalars().first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Batch item not found.")
+    _require_simulation_allowed()
+    _, item = await _educator_batch_item(db, batch_id, item_id, educator)
 
     item.retry_count = (item.retry_count or 0) + 1
     item.status = "queued"
@@ -694,20 +925,13 @@ async def update_batch_item_review(
     Allows teacher to manually confirm/assign student identity and correct question marks/feedback
     before final approval.
     """
-    res = await db.execute(
-        select(GradingBatchItem).filter(
-            GradingBatchItem.id == item_id,
-            GradingBatchItem.batch_id == batch_id,
-        )
-    )
-    item = res.scalars().first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Batch item not found.")
+    _, item = await _educator_batch_item(db, batch_id, item_id, educator)
 
     if req.student_id is not None:
         st_res = await db.execute(select(Student).filter(Student.id == req.student_id))
         st = st_res.scalars().first()
-        if not st:
+        batch = await _educator_batch(db, batch_id, educator)
+        if not st or st.school_id != batch.school_id:
             raise HTTPException(status_code=404, detail="Selected student not found.")
         item.student_id = st.id
         item.student_name = st.name
@@ -715,7 +939,7 @@ async def update_batch_item_review(
 
     if req.question_evaluations is not None:
         item.question_evaluations_json = req.question_evaluations
-        item.marks_obtained = sum(int(q.get("awarded_marks", 0)) for q in req.question_evaluations)
+        item.marks_obtained = sum(int(q.get("awarded_marks") or 0) for q in req.question_evaluations)
 
     if req.marks_obtained is not None:
         item.marks_obtained = max(0, min(item.max_marks, req.marks_obtained))
@@ -796,6 +1020,9 @@ async def _publish_item_submission(
         au_score=au,
         ct_score=ct,
         overall_score=overall,
+        subject_id=asm.subject_id if asm else None,
+        source_assessment_id=batch.assessment_id,
+        source_submission_id=sub.id,
         notes=f"Batch Auto-Graded & Teacher Approved: {item.file_name}",
     )
     db.add(snapshot)
@@ -813,22 +1040,22 @@ async def approve_batch_item(
     db: AsyncSession = Depends(get_db),
     educator: User = Depends(require_roles("admin", "principal", "teacher")),
 ):
-    batch_res = await db.execute(select(GradingBatch).filter(GradingBatch.id == batch_id))
-    batch = batch_res.scalars().first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found.")
-
-    item_res = await db.execute(
-        select(GradingBatchItem).filter(
-            GradingBatchItem.id == item_id,
-            GradingBatchItem.batch_id == batch_id,
-        )
-    )
-    item = item_res.scalars().first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Batch item not found.")
-
+    batch, item = await _educator_batch_item(db, batch_id, item_id, educator)
     if item.is_approved:
+        return BatchItemOut.model_validate(item)
+
+    # Claim the item atomically so two concurrent approvals publish exactly one submission.
+    await db.commit()
+    claimed = await db.execute(
+        update(GradingBatchItem)
+        .where(GradingBatchItem.id == item_id, GradingBatchItem.is_approved == False)  # noqa: E712
+        .values(is_approved=True)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount == 0:
+        await db.rollback()
+        db.expire_all()
+        item = (await db.execute(select(GradingBatchItem).filter(GradingBatchItem.id == item_id))).scalars().first()
         return BatchItemOut.model_validate(item)
 
     await _publish_item_submission(db, batch, item, educator)
@@ -859,10 +1086,7 @@ async def approve_all_verified_batch_items(
     Approves and publishes all completed, high-confidence items that do not require manual review.
     Uncertain items remain flagged for individual teacher verification.
     """
-    batch_res = await db.execute(select(GradingBatch).filter(GradingBatch.id == batch_id))
-    batch = batch_res.scalars().first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found.")
+    batch = await _educator_batch(db, batch_id, educator)
 
     items_res = await db.execute(
         select(GradingBatchItem).filter(

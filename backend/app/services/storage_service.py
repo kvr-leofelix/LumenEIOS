@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import uuid
 import hashlib
 import aiofiles
@@ -50,7 +51,9 @@ class StorageService:
         _, ext = os.path.splitext(raw_filename.lower())
         content_type = (file.content_type or "application/octet-stream").lower()
 
-        if content_type not in ALLOWED_MIME_TYPES and ext not in ALLOWED_EXTENSIONS:
+        expected_ext = ALLOWED_MIME_TYPES.get(content_type)
+        jpeg_alias = expected_ext in {".jpg", ".jpeg"} and ext in {".jpg", ".jpeg"}
+        if ext not in ALLOWED_EXTENSIONS or (expected_ext and expected_ext != ext and not jpeg_alias):
             return {
                 "valid": False,
                 "file_name": raw_filename,
@@ -98,7 +101,7 @@ class StorageService:
                 "file_name": raw_filename,
                 "file_size": size,
                 "mime_type": content_type,
-                "error": f"Storage write error: {str(exc)}",
+                "error": "Storage write failed. Contact an administrator.",
             }
 
         if size == 0:
@@ -150,8 +153,10 @@ class StorageService:
         }
 
     def get_file_path(self, storage_path: str) -> str:
-        if os.path.exists(storage_path):
-            return storage_path
+        candidate = Path(storage_path).resolve()
+        root = Path(self.upload_dir).resolve()
+        if candidate.is_relative_to(root) and candidate.is_file():
+            return str(candidate)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Document file not found in storage."

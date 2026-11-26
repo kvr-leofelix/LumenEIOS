@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 import backend.app.api.v1.ocr as ocr_api
-from backend.app.services.ocr_service import QwenOCRUnavailableError
+from backend.app.services.ai_gateway import AINotConfigured
 
 
 @pytest.mark.asyncio
@@ -85,28 +85,20 @@ async def test_time_aware_pacing(client, teacher_token):
 
 
 @pytest.mark.asyncio
-async def test_compression_proposal_lifecycle(client, teacher_token, principal_token):
-    # 1. Teacher previews/generates compression proposal
+async def test_legacy_compression_is_retired(client, teacher_token, principal_token):
+    # The fixed-ratio compression path is retired (no Core/Non-Core percentage may be applied).
     t_headers = {"Authorization": f"Bearer {teacher_token}"}
     res_gen = await client.post(
         "/api/v1/classes/class-8a/time-aware/compression-preview",
         headers=t_headers,
         json={"total_official_days": 220, "current_day": 104},
     )
-    assert res_gen.status_code == 200
-    proposal = res_gen.json()
-    assert proposal["days_saved"] > 0
-    prop_id = proposal["proposal_id"]
+    assert res_gen.status_code == 410
+    assert "planning workspace" in res_gen.json()["detail"]
 
-    # 2. Principal approves proposal
     p_headers = {"Authorization": f"Bearer {principal_token}"}
-    res_app = await client.post(
-        f"/api/v1/curriculum-proposals/{prop_id}/approve",
-        headers=p_headers,
-        json={"action": "approve"},
-    )
-    assert res_app.status_code == 200
-    assert res_app.json()["status"] == "approved"
+    res_missing = await client.post("/api/v1/curriculum-proposals/does-not-exist/approve", headers=p_headers, json={"action": "approve"})
+    assert res_missing.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -167,20 +159,19 @@ async def test_simulated_ocr_and_human_review(client, teacher_token):
 @pytest.mark.asyncio
 async def test_qwen_ocr_preview_accepts_multiple_files_and_passes_buffer(client, teacher_token, monkeypatch):
     paths = []
-    options_seen = []
+    waits = []
 
-    class PreviewProvider:
-        async def extract_document(self, document_path, options=None):
-            paths.append(Path(document_path))
-            options_seen.append(options)
-            assert Path(document_path).exists()
-            return {"extracted_text": "Recognized answer", "pages_processed": 1}
+    async def preview(path, *, file_name, mime_type, wait_before_each_image):
+        paths.append(Path(path))
+        waits.append(wait_before_each_image)
+        assert Path(path).exists()
+        return "Recognized answer", 1
 
-    monkeypatch.setattr(ocr_api, "get_ocr_provider", lambda _name: PreviewProvider())
+    monkeypatch.setattr(ocr_api, "extract_gemini_text", preview)
     response = await client.post(
         "/api/v1/ocr/extract-preview",
         headers={"Authorization": f"Bearer {teacher_token}"},
-        data={"wait_before_each_image": "true"},
+        data={"wait_before_each_image": "true", "provider": "gemini"},
         files=[
             ("files", ("first.png", b"first image", "image/png")),
             ("files", ("second.jpg", b"second image", "image/jpeg")),
@@ -191,7 +182,7 @@ async def test_qwen_ocr_preview_accepts_multiple_files_and_passes_buffer(client,
     result = response.json()
     assert [item["file_name"] for item in result["results"]] == ["first.png", "second.jpg"]
     assert all(item["extracted_text"] == "Recognized answer" for item in result["results"])
-    assert options_seen == [{"buffer_seconds": 5}, {"buffer_seconds": 5}]
+    assert waits == [True, True]
     assert all(not path.exists() for path in paths)
 
 
@@ -201,20 +192,20 @@ async def test_qwen_ocr_preview_reports_unavailable_gpu_and_cleans_upload(
 ):
     paths = []
 
-    class UnavailableProvider:
-        async def extract_document(self, document_path, _options=None):
-            paths.append(Path(document_path))
-            raise QwenOCRUnavailableError("CUDA GPU is unavailable.")
+    async def unavailable(path, **_kwargs):
+        paths.append(Path(path))
+        raise AINotConfigured()
 
-    monkeypatch.setattr(ocr_api, "get_ocr_provider", lambda _name: UnavailableProvider())
+    monkeypatch.setattr(ocr_api, "extract_gemini_text", unavailable)
     response = await client.post(
         "/api/v1/ocr/extract-preview",
         headers={"Authorization": f"Bearer {teacher_token}"},
+        data={"provider": "gemini"},
         files=[("files", ("answer.png", b"image bytes", "image/png"))],
     )
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "CUDA GPU is unavailable."
+    assert "GEMINI_API_KEY" in response.json()["detail"]
     assert len(paths) == 1
     assert not paths[0].exists()
 

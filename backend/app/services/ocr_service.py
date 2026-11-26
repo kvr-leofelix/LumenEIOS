@@ -1,5 +1,6 @@
 import abc
 import asyncio
+import importlib.util
 import io
 import logging
 import os
@@ -7,6 +8,7 @@ import threading
 import time
 from typing import Dict, List, Any, Optional
 from backend.app.core.config import settings
+from backend.app.services.progress import report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +111,12 @@ class QwenOCRInferenceError(RuntimeError):
     pass
 
 
+def is_degenerate_output(text: str) -> bool:
+    """True when the model produced (almost) nothing but punctuation such as "!!!!!"."""
+    stripped = "".join(text.split())
+    return len(stripped) >= 8 and sum(ch.isalnum() for ch in stripped) / len(stripped) < 0.1
+
+
 class QwenVisionOCRProvider(BaseOCRProvider):
     """Server-side Qwen2.5-VL OCR; model and optional GPU dependencies load on first use."""
 
@@ -116,7 +124,8 @@ class QwenVisionOCRProvider(BaseOCRProvider):
         "You are an expert OCR model. Extract only the text and formulas visible in the image. "
         "Transcribe the original language directly without translating it. If text is unclear, "
         "write [unclear] instead of guessing. Format mathematical expressions in LaTeX. "
-        "Do not add an introduction, headings, summaries, or explanations."
+        "Transcribe every line completely, word for word, including whole sentences and the writer's "
+        "own explanations; never shorten an answer. Do not add an introduction, summary or commentary of your own."
     )
     _max_pdf_pages = 25
 
@@ -130,12 +139,14 @@ class QwenVisionOCRProvider(BaseOCRProvider):
     async def extract_document(
         self, document_path: str, options: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        buffer_seconds = 5 if options and options.get("buffer_seconds") else 0
-        return await asyncio.to_thread(self._extract_sync, document_path, buffer_seconds)
+        buffer = options or {}
+        return await asyncio.to_thread(self._extract_sync, document_path, buffer)
 
     def _load_model(self) -> None:
         if self._model is not None:
             return
+
+        report_progress("model", "Loading the shared Qwen model", 0, 1)
 
         try:
             import torch
@@ -147,32 +158,71 @@ class QwenVisionOCRProvider(BaseOCRProvider):
                 "with a CUDA-enabled PyTorch build."
             ) from exc
 
-        if not torch.cuda.is_available():
-            raise QwenOCRUnavailableError(
-                "Qwen OCR requires an available NVIDIA CUDA GPU in the backend environment."
-            )
-
+        use_cuda = torch.cuda.is_available()
         model_id = settings.QWEN_VL_MODEL_ID
+        full_model = os.path.join(
+            os.path.expanduser("~"),
+            ".cache", "huggingface", "lumeneios-ocr", "Qwen2.5-VL-3B-Instruct",
+        )
+        if not os.path.isfile(os.path.join(full_model, "config.json")):
+            full_model = "Qwen/Qwen2.5-VL-3B-Instruct"
+        # AutoAWQ is Linux-only. On a Windows CUDA build, quantize the full checkpoint
+        # to 4-bit so the 3B model fits an 8 GB GPU. The stub torch used in tests has
+        # no torch.version, so those tests keep the AWQ load path.
+        windows_gpu = (
+            use_cuda
+            and hasattr(torch, "version")
+            and "awq" in model_id.lower()
+            and importlib.util.find_spec("awq") is None
+        )
+        if windows_gpu:
+            model_id = full_model
+        elif not use_cuda and "awq" in model_id.lower():
+            model_id = full_model
         try:
             processor = AutoProcessor.from_pretrained(
                 model_id,
                 min_pixels=512 * 28 * 28,
-                max_pixels=2048 * 28 * 28,
+                # ~1 MP keeps handwriting legible; at the old ~1.6 MP cap a float16 3B model overflowed
+                # on full-page photos and produced only "!!!!" (NaN logits decode to token 0).
+                max_pixels=1280 * 28 * 28,
             )
-            config = AutoConfig.from_pretrained(model_id)
-            # lm_head has no quantized weights in these AWQ checkpoints (it is tied to
-            # embed_tokens or stored as plain float16). Converting it would replace it
-            # with randomly initialized AWQ weights and break inference.
-            quantization_config = getattr(config, "quantization_config", None)
-            if quantization_config:
-                excluded = quantization_config.get("modules_to_not_convert") or []
-                quantization_config["modules_to_not_convert"] = [*excluded, "lm_head"]
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                model_id,
-                config=config,
-                torch_dtype=torch.float16,
-                device_map="auto",
-            )
+            if windows_gpu:
+                from transformers import BitsAndBytesConfig
+
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    model_id,
+                    quantization_config=BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True,
+                    ),
+                    torch_dtype=torch.float16,
+                    device_map={"": 0},
+                )
+            else:
+                config = AutoConfig.from_pretrained(model_id)
+                # lm_head has no quantized weights in these AWQ checkpoints (it is tied to
+                # embed_tokens or stored as plain float16). Converting it would replace it
+                # with randomly initialized AWQ weights and break inference.
+                quantization_config = getattr(config, "quantization_config", None)
+                if quantization_config and not use_cuda:
+                    raise QwenOCRUnavailableError(
+                        f"Checkpoint '{model_id}' is quantized and cannot run on CPU. "
+                        "Use Qwen/Qwen2.5-VL-3B-Instruct."
+                    )
+                if quantization_config:
+                    excluded = quantization_config.get("modules_to_not_convert") or []
+                    quantization_config["modules_to_not_convert"] = [*excluded, "lm_head"]
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    model_id,
+                    config=config,
+                    torch_dtype=torch.float16 if use_cuda else torch.bfloat16,
+                    device_map="auto" if use_cuda else "cpu",
+                )
+        except QwenOCRUnavailableError:
+            raise
         except Exception as exc:
             logger.exception("Could not load Qwen OCR model %s", model_id)
             raise QwenOCRUnavailableError(
@@ -182,19 +232,40 @@ class QwenVisionOCRProvider(BaseOCRProvider):
         self._torch = torch
         self._processor = processor
         self._model = model
+        self._model_id = model_id
+        self._device = "cuda" if use_cuda else "cpu"
         self._process_vision_info = process_vision_info
+        logger.info("Loaded Qwen OCR model %s on %s", model_id, self._device)
+        report_progress("model", "Loaded the shared Qwen model", 1, 1)
+
+    def generate(self, messages: list[dict[str, Any]], max_new_tokens: int) -> str:
+        """Generate with the same model and GPU lock used by worksheet OCR."""
+        with self._inference_lock:
+            self._load_model()
+            return self._generate_locked(messages, max_new_tokens)
 
     def _infer_image(self, image: Any) -> str:
+        def run(img: Any) -> str:
+            return self._generate_locked([{
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img},
+                    {"type": "text", "text": self._prompt},
+                ],
+            }], max_new_tokens=2048)
+
+        text = run(image)
+        # Numerical overflow shows up as a run of "!" (token 0). Retry once at a smaller size.
+        if is_degenerate_output(text) and hasattr(image, "resize") and getattr(image, "width", 0) > 700:
+            logger.warning("Qwen returned degenerate output; retrying at reduced resolution")
+            scale = 700 / image.width
+            text = run(image.resize((700, max(1, int(image.height * scale)))))
+            if is_degenerate_output(text):
+                return ""
+        return text
+
+    def _generate_locked(self, messages: list[dict[str, Any]], max_new_tokens: int) -> str:
         try:
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image},
-                        {"type": "text", "text": self._prompt},
-                    ],
-                }
-            ]
             text = self._processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
@@ -205,12 +276,12 @@ class QwenVisionOCRProvider(BaseOCRProvider):
                 videos=video_inputs,
                 padding=True,
                 return_tensors="pt",
-            ).to("cuda")
+            ).to(self._model.device)
 
             with self._torch.inference_mode():
                 generated_ids = self._model.generate(
                     **inputs,
-                    max_new_tokens=2048,
+                    max_new_tokens=max_new_tokens,
                     do_sample=False,
                 )
 
@@ -224,14 +295,17 @@ class QwenVisionOCRProvider(BaseOCRProvider):
                 clean_up_tokenization_spaces=False,
             )[0].strip()
         except Exception as exc:
-            logger.exception("Qwen OCR inference failed")
+            logger.exception("Qwen inference failed")
             raise QwenOCRInferenceError(
-                "Qwen OCR inference failed; check backend logs for the model error."
+                "Qwen inference failed; check backend logs for the model error."
             ) from exc
 
-    def _extract_sync(self, document_path: str, buffer_seconds: int) -> Dict[str, Any]:
+    def _extract_sync(self, document_path: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         from PIL import Image
 
+        options = options or {}
+        buffer_seconds = int(options.get("buffer_seconds") or 0)
+        file_name = str(options.get("file_name") or os.path.basename(document_path))
         page_texts: List[str] = []
         is_pdf = os.path.splitext(document_path)[1].lower() == ".pdf"
 
@@ -243,8 +317,11 @@ class QwenVisionOCRProvider(BaseOCRProvider):
                     "PDF OCR requires PyMuPDF. Install backend/requirements-ocr.txt."
                 ) from exc
 
+            # Open from bytes: a failed open by path can leave the file locked on Windows,
+            # which then blocks deleting the temporary upload.
             try:
-                pdf_document = pymupdf.open(document_path)
+                with open(document_path, "rb") as handle:
+                    pdf_document = pymupdf.open(stream=handle.read(), filetype="pdf")
             except Exception as exc:
                 raise QwenOCRInputError("The uploaded PDF could not be opened.") from exc
 
@@ -257,17 +334,19 @@ class QwenVisionOCRProvider(BaseOCRProvider):
                     raise QwenOCRInputError(
                         f"PDF exceeds the {self._max_pdf_pages}-page OCR limit."
                     )
-                pages = (
-                    Image.open(
+                total_pages = pdf.page_count
+                for index, page in enumerate(pdf, start=1):
+                    report_progress(
+                        "extract",
+                        f"{file_name}: extracting page {index} of {total_pages}",
+                        index - 1,
+                        total_pages,
+                    )
+                    page_image = Image.open(
                         io.BytesIO(
-                            page.get_pixmap(
-                                matrix=pymupdf.Matrix(2, 2), alpha=False
-                            ).tobytes("png")
+                            page.get_pixmap(matrix=pymupdf.Matrix(2, 2), alpha=False).tobytes("png")
                         )
                     )
-                    for page in pdf
-                )
-                for page_image in pages:
                     with page_image:
                         # ponytail: serialize inference on the shared GPU; add per-device workers if throughput matters
                         with self._inference_lock:
@@ -275,6 +354,12 @@ class QwenVisionOCRProvider(BaseOCRProvider):
                             if buffer_seconds:
                                 time.sleep(buffer_seconds)
                             page_texts.append(self._infer_image(page_image.convert("RGB")))
+                    report_progress(
+                        "extract",
+                        f"{file_name}: extracted page {index} of {total_pages}",
+                        index,
+                        total_pages,
+                    )
         else:
             try:
                 image = Image.open(document_path)
@@ -285,21 +370,23 @@ class QwenVisionOCRProvider(BaseOCRProvider):
                     rgb_image = image.convert("RGB")
                 except (OSError, ValueError) as exc:
                     raise QwenOCRInputError("The uploaded image could not be decoded.") from exc
+                report_progress("extract", f"{file_name}: extracting page 1 of 1", 0, 1)
                 with self._inference_lock:
                     self._load_model()
                     if buffer_seconds:
                         time.sleep(buffer_seconds)
                     page_texts.append(self._infer_image(rgb_image))
+                report_progress("extract", f"{file_name}: extracted page 1 of 1", 1, 1)
 
         return {
             "provider": "qwen2.5-vl",
-            "model_version": settings.QWEN_VL_MODEL_ID,
+            "model_version": getattr(self, "_model_id", settings.QWEN_VL_MODEL_ID),
             "extracted_text": "\n\n".join(text for text in page_texts if text),
             "pages_processed": len(page_texts),
         }
 
 
-_qwen_provider = QwenVisionOCRProvider()
+qwen_model = QwenVisionOCRProvider()
 
 
 def get_ocr_provider(provider_name: str = "simulated") -> BaseOCRProvider:
@@ -308,5 +395,5 @@ def get_ocr_provider(provider_name: str = "simulated") -> BaseOCRProvider:
     elif provider_name == "paddleocr":
         return PaddleOCRProvider()
     elif provider_name == "qwen":
-        return _qwen_provider
+        return qwen_model
     return SimulatedOCRProvider()

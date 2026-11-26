@@ -1,3 +1,4 @@
+import { useChartInk } from '../../lib/themeColor';
 import React from 'react';
 import {
   Radar,
@@ -50,16 +51,17 @@ export const CompetencyRadarChart: React.FC<CompetencyRadarChartProps> = ({
     },
   ];
 
+  const ink = useChartInk();
   return (
     <div style={{ width: '100%', height }}>
       <ResponsiveContainer width="100%" height="100%">
-        <RadarChart cx="50%" cy="50%" outerRadius="75%" data={data}>
-          <PolarGrid stroke="#E1E7ED" />
+        <RadarChart cx="50%" cy="50%" outerRadius="58%" margin={{ top: 8, right: 44, bottom: 8, left: 44 }} data={data}>
+          <PolarGrid stroke={ink.grid} />
           <PolarAngleAxis
             dataKey="subject"
-            tick={{ fill: '#142A43', fontSize: 12, fontWeight: 500 }}
+            tick={{ fill: ink.text, fontSize: 12, fontWeight: 500 }}
           />
-          <PolarRadiusAxis angle={30} domain={[0, 100]} stroke="#CBD5E1" tick={{ fontSize: 10 }} />
+          <PolarRadiusAxis angle={30} domain={[0, 100]} stroke={ink.grid} tick={{ fontSize: 10, fill: ink.muted }} />
           {baseline && (
             <Radar
               name={benchmarkName}

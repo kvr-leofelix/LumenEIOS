@@ -1,5 +1,6 @@
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from backend.app.schemas.common import BaseSchema
 
 
@@ -65,6 +66,18 @@ class OCRPreviewOut(BaseModel):
     provider: str
     model_version: str
     results: List[OCRPreviewItem]
+
+
+class StudentOcrHistoryOut(OCRPreviewItem, BaseSchema):
+    id: str
+    created_at: datetime
+    assignment_title: str | None = None
+
+    @field_validator("created_at")
+    @classmethod
+    def use_utc_for_naive_timestamp(cls, value: datetime) -> datetime:
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
 
 
 class VerifiedItemRequest(BaseModel):
@@ -149,3 +162,16 @@ class BatchItemUpdateRequest(BaseModel):
     marks_obtained: Optional[int] = None
     question_evaluations: Optional[List[Dict[str, Any]]] = None
     clear_review_flag: bool = True
+
+    @field_validator("question_evaluations")
+    @classmethod
+    def _awards_are_whole_marks(cls, rows: Optional[List[Dict[str, Any]]]):
+        """Reject missing, non-finite, fractional or negative awards instead of crashing on int()."""
+        for index, row in enumerate(rows or [], start=1):
+            value = row.get("awarded_marks")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"Question {index}: awarded_marks must be a whole number.")
+            if value != value or value in (float("inf"), float("-inf")) or value != int(value) or value < 0:
+                raise ValueError(f"Question {index}: awarded_marks must be a whole, non-negative number.")
+            row["awarded_marks"] = int(value)
+        return rows

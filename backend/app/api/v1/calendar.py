@@ -1,3 +1,5 @@
+from backend.app.api.record_access import check_school, class_record
+from backend.app.api.dependencies import require_bearer_token
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -5,15 +7,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.dependencies import get_current_user, require_roles
 from backend.app.db.session import get_db
-from backend.app.models.entities import School, InstructionalDisruption, CurriculumDay, User, AuditEvent, utc_now
+from backend.app.models.entities import ClassSection, School, InstructionalDisruption, CurriculumDay, User, AuditEvent, utc_now
 from backend.app.schemas.calendar import DisruptionCreate, DisruptionOut, CalendarAvailabilityOut
 from backend.app.services.time_aware_engine import calculate_pacing_metrics
 
-router = APIRouter(tags=["Academic Calendar"])
+router = APIRouter(tags=["Academic Calendar"], dependencies=[Depends(require_bearer_token)])
 
 
 @router.get("/schools/{school_id}/calendar")
-async def get_school_calendar(school_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def get_school_calendar(school_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(require_roles("admin", "principal", "teacher"))):
+    await check_school(db, current_user, school_id)
     school_res = await db.execute(select(School).filter(School.id == school_id))
     school = school_res.scalars().first()
     if not school:
@@ -38,6 +41,7 @@ async def record_disruption(
     db: AsyncSession = Depends(get_db),
     educator: User = Depends(require_roles("admin", "principal", "teacher"))
 ):
+    await check_school(db, educator, school_id)
     school_res = await db.execute(select(School).filter(School.id == school_id))
     school = school_res.scalars().first()
     if not school:
@@ -77,6 +81,7 @@ async def delete_disruption(
     disruption = res.scalars().first()
     if not disruption:
         raise HTTPException(status_code=404, detail="Disruption not found.")
+    await check_school(db, educator, disruption.school_id)
     await db.delete(disruption)
     await db.commit()
     return {"message": "Disruption deleted."}
@@ -86,8 +91,9 @@ async def delete_disruption(
 async def get_instructional_availability(
     school_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles("admin", "principal", "teacher"))
 ):
+    await check_school(db, current_user, school_id)
     school_res = await db.execute(select(School).filter(School.id == school_id))
     school = school_res.scalars().first()
     if not school:
@@ -96,7 +102,7 @@ async def get_instructional_availability(
     disruptions_res = await db.execute(select(InstructionalDisruption).filter(InstructionalDisruption.school_id == school_id))
     disruptions = disruptions_res.scalars().all()
 
-    curriculum_res = await db.execute(select(CurriculumDay))
+    curriculum_res = await db.execute(select(CurriculumDay).where(CurriculumDay.class_id.in_(select(ClassSection.id).where(ClassSection.school_id == school_id))))
     curriculum = curriculum_res.scalars().all()
 
     metrics = calculate_pacing_metrics(school.official_working_days, 104, disruptions, curriculum)

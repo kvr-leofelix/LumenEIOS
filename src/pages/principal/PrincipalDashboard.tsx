@@ -10,6 +10,12 @@ import { Badge } from '../../components/common/Badge';
 import { Modal } from '../../components/common/Modal';
 import { CompetencyRadarChart } from '../../components/charts/CompetencyRadarChart';
 import { CompetencyBarChart } from '../../components/charts/CompetencyBarChart';
+import { ApiError, apiClient } from '../../lib/apiClient';
+import { CLASS_NAME_HELP } from '../../lib/className';
+import { SchoolOverview } from '../../components/school/SchoolOverview';
+import { AnnouncementComposer } from '../../features/announcements/AnnouncementComposer';
+import { CalendarOverview } from '../../features/calendar/CalendarOverview';
+import { AnnouncementsOverview } from '../../features/announcements/AnnouncementsOverview';
 import {
   School,
   Users,
@@ -21,40 +27,59 @@ import {
   CheckCircle2,
   TrendingUp,
   FileSpreadsheet,
+  PlusCircle,
 } from 'lucide-react';
 
 export const PrincipalDashboard: React.FC = () => {
-  const { schools, classes, students, curriculumDays, lostTeachingDays } = useData();
+  const { schools, addClass, workspace, refreshWorkspace } = useData();
   const { currentUser, currentSchoolId } = useAuth();
   const navigate = useNavigate();
 
   const [isAnnounceModalOpen, setIsAnnounceModalOpen] = useState(false);
-  const [announceText, setAnnounceText] = useState('');
+  const [announceTick, setAnnounceTick] = useState(0);
+  const [isClassModalOpen, setIsClassModalOpen] = useState(false);
+  const [className, setClassName] = useState('');
+  const [classError, setClassError] = useState<string | null>(null);
+  const [savingClass, setSavingClass] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const activeSchool = schools.find((s) => s.id === currentSchoolId) || schools[0];
-  const schoolClasses = classes.filter((c) => c.schoolId === activeSchool.id);
-  const schoolStudents = students.filter((s) => s.schoolId === activeSchool.id);
-  const schoolAvg = calculateAverageCompetencies(schoolStudents);
 
-  const pacing = calculateTimeAwarePacing(curriculumDays, lostTeachingDays, 180, 104);
-
-  // Class comparison data for Recharts
-  const classComparison = [
-    { name: 'Class 8-A', LU: 78, CU: 82, AU: 70, CT: 65 },
-    { name: 'Class 8-B', LU: 84, CU: 79, AU: 74, CT: 70 },
-    { name: 'Class 9-B', LU: 80, CU: 82, AU: 76, CT: 74 },
-    { name: 'Class 7-A', LU: 86, CU: 78, AU: 72, CT: 68 },
-  ];
-
-  const handleSendAnnouncement = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!announceText.trim()) return;
-    setIsAnnounceModalOpen(false);
-    setAnnounceText('');
-    setToast('Faculty announcement successfully broadcast to all teachers!');
+  const handleAddClass = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSavingClass(true);
+    setClassError(null);
+    let addedName: string;
+    if (workspace) {
+      // Live: the class exists only once the server has saved it; the list is then reloaded from the database.
+      try {
+        const created = await apiClient.classes.create(activeSchool.id, className);
+        await refreshWorkspace();
+        addedName = created?.name ?? className;
+      } catch (error) {
+        setClassError(error instanceof ApiError && error.status !== 0
+          ? error.message || 'A class with this name already exists'
+          : 'Could not reach the server. The class was not added.');
+        setSavingClass(false);
+        return;
+      }
+    } else {
+      const saved = addClass(activeSchool.id, className);
+      if (!saved.ok) {
+        setClassError(saved.error);
+        setSavingClass(false);
+        return;
+      }
+      addedName = saved.name;
+    }
+    setSavingClass(false);
+    setClassName('');
+    setIsClassModalOpen(false);
+    setToast(`Added ${addedName}.`);
     setTimeout(() => setToast(null), 4000);
   };
+
+  if (!activeSchool) return <p role="status" className="p-4 text-sm text-content-secondary">Loading your school…</p>;
 
   return (
     <div className="space-y-6">
@@ -71,14 +96,14 @@ export const PrincipalDashboard: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold text-navy-900 tracking-tight">
-              Principal Executive Dashboard: {activeSchool.name}
+              {activeSchool.name}
             </h1>
             <Badge variant="teal" size="sm">
               Campus Lead
             </Badge>
           </div>
           <p className="text-xs text-content-secondary mt-1">
-            {activeSchool.location}, {activeSchool.state} • Infrastructure: {activeSchool.infrastructureTier}
+            {activeSchool.location}, {activeSchool.state} · CBSE · Session {activeSchool.academicYear} · Principal {activeSchool.principalName}
           </p>
         </div>
 
@@ -89,7 +114,19 @@ export const PrincipalDashboard: React.FC = () => {
             onClick={() => setIsAnnounceModalOpen(true)}
             icon={<Send className="w-4 h-4" />}
           >
-            Broadcast to Faculty
+            Broadcast announcement
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setClassName('');
+              setClassError(null);
+              setIsClassModalOpen(true);
+            }}
+            icon={<PlusCircle className="w-4 h-4" />}
+          >
+            Add Class
           </Button>
           <Button
             variant="teal"
@@ -102,108 +139,11 @@ export const PrincipalDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* High Pacing Alert */}
-      {pacing.riskStatus === 'high' && (
-        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-bold text-amber-950">
-                Instructional Pacing Warning for Senior Grades
-              </p>
-              <p className="text-amber-800 mt-0.5 leading-relaxed">
-                Faculty recorded 16 cumulative lost teaching days (election duty, extreme weather). Teacher Vikram Sengupta has drafted a 60/40 Syllabus Compression plan.
-              </p>
-            </div>
-          </div>
-          <Button
-            variant="teal"
-            size="sm"
-            onClick={() => navigate('/teacher/time-aware')}
-            icon={<Sparkles className="w-3.5 h-3.5" />}
-          >
-            Review Proposed Compression
-          </Button>
-        </div>
-      )}
+      <SchoolOverview schoolIds={[activeSchool.id]} />
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KPICard
-          title="Total Students"
-          value={activeSchool.studentCount}
-          subtitle="Enrolled learners"
-          icon={<Users className="w-5 h-5 text-navy-800" />}
-          iconBg="bg-navy-50"
-        />
-        <KPICard
-          title="Faculty Workload"
-          value={`${activeSchool.teacherCount} Teachers`}
-          subtitle="42 active section assignments"
-          icon={<BookOpen className="w-5 h-5 text-teal-600" />}
-          iconBg="bg-teal-50"
-          onClick={() => navigate('/principal/teachers')}
-        />
-        <KPICard
-          title="Campus Competency"
-          value={`${schoolAvg.overall || 76}%`}
-          subtitle="+8% growth from baseline"
-          icon={<TrendingUp className="w-5 h-5 text-emerald-600" />}
-          iconBg="bg-emerald-50"
-          trend={{ value: '+8%', isPositive: true, label: 'vs Cycle 1' }}
-        />
-        <KPICard
-          title="Lost Teaching Days"
-          value={`${pacing.totalLostDays} Days`}
-          subtitle="Net buffer: -4 periods"
-          icon={<Clock className="w-5 h-5 text-rose-600" />}
-          iconBg="bg-rose-50"
-          onClick={() => navigate('/teacher/time-aware')}
-        />
-      </div>
-
-      {/* Charts: Benchmark Radar & Class Comparison Bar */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Radar */}
-        <Card>
-          <CardHeader
-            title="School Benchmark Profile"
-            subtitle="Campus average across 4 NEP dimensions"
-          />
-          <CardBody>
-            <CompetencyRadarChart
-              current={schoolAvg}
-              baseline={{ LU: 68, CU: 70, AU: 62, CT: 58, overall: 64 }}
-              benchmarkName="State Benchmark"
-              height={260}
-            />
-          </CardBody>
-        </Card>
-
-        {/* Bar comparison across classes */}
-        <Card className="lg:col-span-2">
-          <CardHeader
-            title="Class-by-Class Competency Comparison"
-            subtitle="Comparing Section Performance in Cycle 2 Mid-Term"
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => navigate('/teacher/classes')}
-                icon={<Users className="w-3.5 h-3.5" />}
-              >
-                Inspect Classes
-              </Button>
-            }
-          />
-          <CardBody>
-            <CompetencyBarChart data={classComparison} height={260} />
-          </CardBody>
-        </Card>
-      </div>
-
-      {/* Quick Navigation to Principal Actions */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Quick Navigation to Principal Actions, with the school calendar alongside */}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid grid-cols-1 gap-4">
         <div
           onClick={() => navigate('/principal/teachers')}
           className="p-4 bg-white rounded-xl border border-surface-border hover:border-teal-400 hover:shadow-card cursor-pointer transition-all"
@@ -234,39 +174,56 @@ export const PrincipalDashboard: React.FC = () => {
           </p>
         </div>
       </div>
+      <div className="space-y-4"><AnnouncementsOverview key={announceTick} /><CalendarOverview /></div>
+      </div>
 
-      {/* Broadcast Announcement Modal */}
       <Modal
-        isOpen={isAnnounceModalOpen}
-        onClose={() => setIsAnnounceModalOpen(false)}
-        title="Broadcast Announcement to Campus Faculty"
-        subtitle="Send high-priority directive to all teachers at Sunrise Public School"
+        isOpen={isClassModalOpen}
+        onClose={() => setIsClassModalOpen(false)}
+        title="Add Class"
+        subtitle={CLASS_NAME_HELP}
         maxWidth="md"
         footer={
           <div className="flex items-center justify-end gap-2.5 w-full">
-            <Button variant="secondary" size="md" onClick={() => setIsAnnounceModalOpen(false)}>
+            <Button variant="secondary" size="md" onClick={() => setIsClassModalOpen(false)}>
               Cancel
             </Button>
-            <Button variant="teal" size="md" onClick={handleSendAnnouncement}>
-              Send Announcement
+            <Button variant="teal" size="md" onClick={handleAddClass} loading={savingClass}>
+              Save Class
             </Button>
           </div>
         }
       >
-        <form onSubmit={handleSendAnnouncement} className="space-y-4 text-xs">
-          <div>
-            <label className="block font-semibold text-content-primary mb-1">Message Content</label>
-            <textarea
-              rows={4}
-              required
-              value={announceText}
-              onChange={(e) => setAnnounceText(e.target.value)}
-              placeholder="e.g. Please review the 60/40 compacting proposals for Mathematics and Science ahead of tomorrow's faculty meeting..."
-              className="w-full px-3 py-2 bg-white border border-surface-border rounded-lg text-xs"
+        <form onSubmit={handleAddClass} className="space-y-3 text-sm">
+          <label className="block font-semibold text-content-primary">
+            Class name
+            <input
+              value={className}
+              onChange={(event) => {
+                setClassName(event.target.value);
+                setClassError(null);
+              }}
+              placeholder="8A or 8 Name1"
+              className="mt-1 w-full px-3 py-2 bg-white border border-surface-border rounded-lg text-sm font-normal"
             />
-          </div>
+          </label>
+          <p className="text-xs text-content-secondary leading-relaxed">
+            Letter sections look like 8A, 8B, or 8X. Named sections look like 8 Name1. Grade is 1 to 12.
+          </p>
+          {classError && <p className="text-sm font-semibold text-rose-700">{classError}</p>}
         </form>
       </Modal>
+
+      <AnnouncementComposer
+        isOpen={isAnnounceModalOpen}
+        onClose={() => setIsAnnounceModalOpen(false)}
+        onSent={(message) => {
+          setIsAnnounceModalOpen(false);
+          setAnnounceTick((n) => n + 1);
+          setToast(message);
+          setTimeout(() => setToast(null), 4000);
+        }}
+      />
     </div>
   );
 };

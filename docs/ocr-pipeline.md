@@ -69,4 +69,4 @@ Install a CUDA-enabled PyTorch build for the laptop, then install `backend/requi
 
 ## 4. OCR Preview and Existing Human Review
 
-The current **Scan Review** screen (`/teacher/scan-review`) uploads files to `POST /api/v1/ocr/extract-preview` and displays each Qwen transcription in a separate preview panel. It does not award marks or publish results. The separate `POST /api/v1/ocr/review/verify` endpoint remains available for workflows that collect teacher-verified marks; the Qwen preview does not call it.
+The current **Upload** screen (`/upload`) uploads files to `POST /api/v1/ocr/extract-preview` and displays each Qwen transcription in a separate preview panel. It does not award marks or publish results. The separate `POST /api/v1/ocr/review/verify` endpoint remains available for workflows that collect teacher-verified marks; the Qwen preview does not call it.

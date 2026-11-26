@@ -3,11 +3,16 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { Topbar } from './Topbar';
 import { Sidebar } from './Sidebar';
 import { RoleSwitcherBanner } from './RoleSwitcherBanner';
+import { DemoDataNotice, demoNoticeFor } from '../common/DemoDataNotice';
 import { Menu, X } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { AssistantPanel } from './AssistantPanel';
 
 export const AppLayout: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const location = useLocation();
+  const demoNotice = demoNoticeFor(location.pathname);
+  const { currentUser, currentSchoolId } = useAuth();
 
   // Close mobile menu on route change
   React.useEffect(() => {
@@ -27,6 +32,8 @@ export const AppLayout: React.FC = () => {
         <span className="text-xs font-semibold">LumenEIOS Menu</span>
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          aria-expanded={mobileMenuOpen}
           className="p-1 rounded bg-navy-700 text-gray-200"
         >
           {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -46,16 +53,20 @@ export const AppLayout: React.FC = () => {
               onClick={() => setMobileMenuOpen(false)}
             />
             <div className="relative z-50 w-64 bg-navy-800 h-full flex flex-col shadow-xl">
-              <Sidebar />
+              <Sidebar mobile />
             </div>
           </div>
         )}
 
         {/* Dynamic Route Viewport */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full overflow-x-hidden">
+        <main className="min-w-0 flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full overflow-x-hidden">
+          {demoNotice && <DemoDataNotice text={demoNotice} />}
           <Outlet />
         </main>
       </div>
+      {currentUser && ['admin', 'teacher', 'principal', 'student', 'parent'].includes(currentUser.role) && (
+        <AssistantPanel key={JSON.stringify([currentUser.id, currentUser.role, currentSchoolId])} role={currentUser.role} />
+      )}
     </div>
   );
 };

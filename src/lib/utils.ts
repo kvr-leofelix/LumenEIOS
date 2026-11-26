@@ -71,3 +71,17 @@ export function getTierBadge(tier: string) {
   }
 }
 
+
+const HONORIFICS = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'shri', 'smt', 'sri', 'kumari']);
+
+/** First letter of a person's name for an avatar, skipping titles such as "Mr." or "Dr.". */
+export function nameInitial(name: string | null | undefined): string {
+  const words = (name ?? '').trim().split(/\s+/).filter(Boolean);
+  const first = words.find((w) => !HONORIFICS.has(w.replace(/\.$/, '').toLowerCase())) ?? words[0] ?? '';
+  return first.charAt(0).toUpperCase();
+}
+
+/** "1 mark", "2 marks", "1.5 marks". */
+export function marksLabel(value: number | string | null | undefined): string {
+  return `${value ?? 0} ${Number(value) === 1 ? 'mark' : 'marks'}`;
+}

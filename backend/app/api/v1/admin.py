@@ -1,3 +1,4 @@
+from backend.app.api.dependencies import require_bearer_token
 from typing import Dict, Any
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, func
@@ -7,7 +8,7 @@ from backend.app.api.dependencies import require_roles
 from backend.app.db.session import get_db
 from backend.app.models.entities import School, Student, User, ClassSection, Assessment
 
-router = APIRouter(prefix="/admin", tags=["Administration"])
+router = APIRouter(prefix="/admin", tags=["Administration"], dependencies=[Depends(require_bearer_token)])
 
 
 @router.get("/overview")

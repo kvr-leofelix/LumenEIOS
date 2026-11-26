@@ -55,41 +55,9 @@ def test_calculate_pacing_metrics_deficit():
     assert metrics["risk_status"] == "high"
 
 
-def test_generate_compression_proposal_preserves_core_competencies():
-    # Invariant: 100% of core concepts MUST remain in classroom contact hours
-    core_topics = [
-        CurriculumDay(id=f"core-{i}", classification="core", status="pending")
-        for i in range(50)
-    ]
-    supp_topics = [
-        CurriculumDay(id=f"supp-{i}", classification="supplementary", status="pending")
-        for i in range(25)
-    ]
-    all_topics = core_topics + supp_topics
-
-    metrics = calculate_pacing_metrics(
-        total_official_days=220,
-        current_day=104,
-        disruptions=[InstructionalDisruption(days_lost=16.0)],
-        curriculum_days=all_topics,
-    )
-
-    proposal, reassigned, integrated = generate_compression_proposal(
-        curriculum_days=all_topics,
-        pacing_metrics=metrics,
-        school_id="school-1",
-        class_id="class-8a",
-    )
-
-    # Invariant check: core topics preserved count must equal the number of core topics
-    assert proposal.topics_preserved_count == len(core_topics)
-    # The reassigned topics must only be supplementary topics
-    for topic in reassigned:
-        assert topic.classification == "supplementary"
-    for topic in integrated:
-        assert topic.classification == "supplementary"
-    # Days saved must be greater than zero
-    assert proposal.days_saved > 0
-    # Revised duration must accommodate all core topics
-    assert proposal.revised_duration_days >= len(core_topics)
-
+def test_legacy_compression_refuses_to_invent_requirements():
+    # Legacy curriculum rows carry no approved topic-level Core/Non-Core period counts, so no fixed-ratio
+    # compression may be generated from them.
+    rows = [CurriculumDay(id="core-1", classification="core", status="pending")]
+    with pytest.raises(ValueError, match="retired"):
+        generate_compression_proposal(curriculum_days=rows, pacing_metrics={}, school_id="school-1", class_id="class-8a")

@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { apiClient } from '../../lib/apiClient';
+import { nameInitial } from '../../lib/utils';
 import { useData } from '../../context/DataContext';
 import { useAuth } from '../../context/AuthContext';
 import { Card, CardHeader, CardBody } from '../../components/common/Card';
@@ -8,32 +10,60 @@ import { Modal } from '../../components/common/Modal';
 import { Users, Edit2, CheckCircle2 } from 'lucide-react';
 
 export const TeacherAssignments: React.FC = () => {
-  const { classes, assignTeacherToClass } = useData();
+  const { classes, workspace, teachers: workspaceTeachers, assignTeacherToClass, refreshWorkspace } = useData();
   const { availableUsers, currentSchoolId } = useAuth();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedTeacherId, setSelectedTeacherId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
-  const schoolClasses = classes.filter((c) => c.schoolId === currentSchoolId || c.schoolId === 'school-1');
-  const teachers = availableUsers.filter((u) => u.role === 'teacher');
+  // Live: the role-scoped workspace from the database. Offline demo: the seeded personas.
+  const schoolClasses = classes.filter((c) => !currentSchoolId || c.schoolId === currentSchoolId);
+  const allTeachers: { id: string; name: string; designation?: string; schoolId?: string }[] = workspace
+    ? workspaceTeachers
+    : availableUsers.filter((u) => u.role === 'teacher');
+  const selectedClass = schoolClasses.find((c) => c.id === selectedClassId);
+  // Only teachers of the class's own school can lead it (the server enforces the same rule).
+  const teachers = allTeachers.filter((t) => !selectedClass || !t.schoolId || t.schoolId === selectedClass.schoolId);
+  const staffCount = allTeachers.filter((t) => !currentSchoolId || !t.schoolId || t.schoolId === currentSchoolId).length;
 
-  const handleOpenAssign = (classId: string, currentTeacherId: string) => {
+  const handleOpenAssign = (classId: string, currentTeacherId: string | null | undefined) => {
+    const cls = schoolClasses.find((c) => c.id === classId);
+    const options = allTeachers.filter((t) => !cls || !t.schoolId || t.schoolId === cls.schoolId);
     setSelectedClassId(classId);
-    setSelectedTeacherId(currentTeacherId);
+    setSelectedTeacherId(options.some((t) => t.id === currentTeacherId) ? currentTeacherId! : options[0]?.id ?? '');
+    setSaveError('');
     setIsModalOpen(true);
   };
 
-  const handleSaveAssignment = (e: React.FormEvent) => {
+  const handleSaveAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     const teacher = teachers.find((t) => t.id === selectedTeacherId);
-    if (!teacher || !selectedClassId) return;
-
-    assignTeacherToClass(selectedClassId, teacher.id, teacher.name);
-    setIsModalOpen(false);
-    setToast(`Assigned ${teacher.name} to class successfully!`);
-    setTimeout(() => setToast(null), 4000);
+    if (!teacher || !selectedClassId || saving) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      if (workspace) {
+        await apiClient.classes.assignTeacher(selectedClassId, teacher.id);
+        await refreshWorkspace();
+      } else {
+        assignTeacherToClass(selectedClassId, teacher.id, teacher.name);
+      }
+      setIsModalOpen(false);
+      setToast(`Assigned ${teacher.name} to ${selectedClass?.name ?? 'the class'}.`);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Could not save the assignment.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -56,7 +86,7 @@ export const TeacherAssignments: React.FC = () => {
         </div>
 
         <Badge variant="teal" size="sm">
-          {teachers.length} Active Teaching Staff
+          {staffCount} Active Teaching Staff
         </Badge>
       </div>
 
@@ -82,9 +112,9 @@ export const TeacherAssignments: React.FC = () => {
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-2">
                         <div className="w-7 h-7 rounded-full bg-teal-50 text-teal-700 flex items-center justify-center font-bold text-xs border border-teal-200">
-                          {cls.classTeacherName.charAt(0)}
+                          {nameInitial(cls.classTeacherName)}
                         </div>
-                        <span className="font-semibold text-content-primary">{cls.classTeacherName}</span>
+                        <span className="font-semibold text-content-primary">{cls.classTeacherName || 'Not assigned'}</span>
                       </div>
                     </td>
                     <td className="py-3 px-4">
@@ -129,16 +159,18 @@ export const TeacherAssignments: React.FC = () => {
             <Button variant="secondary" size="sm" onClick={() => setIsModalOpen(false)}>
               Cancel
             </Button>
-            <Button variant="teal" size="sm" onClick={handleSaveAssignment}>
+            <Button variant="teal" size="sm" onClick={handleSaveAssignment} disabled={saving || !selectedTeacherId} loading={saving}>
               Save Assignment
             </Button>
           </div>
         }
       >
         <form onSubmit={handleSaveAssignment} className="space-y-4 text-xs">
+          {saveError && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700">{saveError}</p>}
           <div>
             <label className="block font-semibold text-content-primary mb-1">Select Teacher</label>
             <select
+              aria-label="Select Teacher"
               value={selectedTeacherId}
               onChange={(e) => setSelectedTeacherId(e.target.value)}
               className="w-full px-3 py-2 bg-white border border-surface-border rounded-lg text-xs"

@@ -1,11 +1,12 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
+from backend.app.modules.differentiated_homework.student_access import resolve_linked_student
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.dependencies import get_current_user
+from backend.app.api.dependencies import get_current_user, require_school_access, user_school_ids, require_class_access
 from backend.app.db.session import get_db
-from backend.app.models.entities import Student, School, ClassSection, User
+from backend.app.models.entities import Student, School, ClassSection, User, ParentStudentLink
 from backend.app.schemas.competencies import (
     CompetencyScoresSchema,
     StudentOut,
@@ -23,18 +24,27 @@ async def get_student_competencies(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Enforce record-level authorization
-    if current_user.role == "student" and current_user.id != student_id:
-        raise HTTPException(status_code=403, detail="Access denied. Students can only view their own competency scores.")
+    # Enforce record-level authorization. Students reach only the record their account is linked to
+    # (never a record that merely shares their user id); parents only their linked children. Anything
+    # else is reported as missing so learners cannot probe which student ids exist.
+    if current_user.role == "student":
+        linked_student = await resolve_linked_student(db, current_user)
+        if not linked_student or linked_student.id != student_id:
+            raise HTTPException(status_code=404, detail="Student not found.")
     if current_user.role == "parent":
-        # Check linked child
-        if student_id not in ("user-student-1", "student-ananya"):
-            raise HTTPException(status_code=403, detail="Access denied. Parents can only view their linked children.")
+        linked = await db.scalar(select(ParentStudentLink.id).where(
+            ParentStudentLink.parent_user_id == current_user.id,
+            ParentStudentLink.student_id == student_id,
+        ))
+        if not linked:
+            raise HTTPException(status_code=404, detail="Student not found.")
 
     st_res = await db.execute(select(Student).filter(Student.id == student_id))
     st = st_res.scalars().first()
     if not st:
         raise HTTPException(status_code=404, detail="Student not found.")
+    if current_user.role not in ("student", "parent"):
+        await require_school_access(db, current_user, st.school_id)
 
     return CompetencyScoresSchema(
         LU=st.lu_score,
@@ -51,6 +61,10 @@ async def get_class_competency_analytics(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    section = await db.get(ClassSection, class_id)
+    if not section:
+        raise HTTPException(status_code=404, detail="Class not found.")
+    await require_class_access(db, current_user, section)
     st_res = await db.execute(select(Student).filter(Student.class_id == class_id))
     students = st_res.scalars().all()
 
@@ -78,6 +92,7 @@ async def get_school_competency_analytics(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    await require_school_access(db, current_user, school_id)
     st_res = await db.execute(select(Student).filter(Student.school_id == school_id))
     students = st_res.scalars().all()
     avg = aggregate_student_competencies(students)
@@ -89,12 +104,17 @@ async def get_school_competency_analytics(
 
 
 @router.get("/analytics/school-comparison", response_model=List[SchoolComparisonItem])
-async def get_school_comparison():
-    return [
-        SchoolComparisonItem(name="Sunrise Public", LU=82, CU=84, AU=78, CT=76),
-        SchoolComparisonItem(name="Green Valley", LU=78, CU=80, AU=74, CT=71),
-        SchoolComparisonItem(name="Pragati Govt", LU=54, CU=62, AU=52, CT=46),
-        SchoolComparisonItem(name="Vidya Niketan", LU=75, CU=76, AU=70, CT=68),
-        SchoolComparisonItem(name="Udaan Learning", LU=51, CU=58, AU=48, CT=43),
-    ]
+async def get_school_comparison(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Averages from real student records, limited to the schools the viewer can see.
+    query = select(School).filter(School.is_archived == False).order_by(School.name)  # noqa: E712
+    schools = [s for s in (await db.execute(query)).scalars()]
+    if current_user.role != "admin":
+        allowed = await user_school_ids(db, current_user)
+        schools = [s for s in schools if s.id in allowed]
+    items = []
+    for school in schools:
+        students = (await db.execute(select(Student).filter(Student.school_id == school.id))).scalars().all()
+        avg = aggregate_student_competencies(students)
+        items.append(SchoolComparisonItem(name=school.name, LU=avg["LU"], CU=avg["CU"], AU=avg["AU"], CT=avg["CT"]))
+    return items
 

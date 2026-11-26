@@ -1,1506 +1,634 @@
+"""LumenEIOS demonstration database: two CBSE schools, Classes 6-8, one academic session in progress.
+
+    Shiksha Bharati Education Society (management, "admin")
+    ├── Sunrise Public School, Bengaluru (school-1)   principal Dr. Lakshmi Narayanan
+    └── Himalayan Vidya Niketan, Mandi    (school-2)   principal Mr. Rajesh Thakur
+
+Each school runs Classes 6, 7 and 8 with sections A and B (20 students each = 120 students per school),
+taught Mathematics, Science, English, Social Science and Hindi by seven subject teachers. Every student has
+one parent/guardian account.
+
+The 2026-27 session started on 1 April 2026. By mid-November the schools have held:
+    Baseline Diagnostic (April) · Class Test 1 (May) · Periodic Test 1 (July) · Written Assignment (August,
+    handwritten, scanned) · Half-Yearly Examination (September) · Class Test 2 (October)
+and have open, ungraded work for students to submit (Mathematics/Science worksheets, Periodic Test 2).
+
+Marks are generated from a per-student ability model (overall level, competency strengths, subject
+strengths, growth across the term and test-day noise), question by question, so totals, competency
+scores (LU/CU/AU/CT), snapshots and the support flags all agree with each other.
+
+Login (see docs/LOGIN_CREDENTIALS.md, written by backend/scripts/build_demo_database.py):
+    management / principals / teachers: <first>.<last>@<school>.lumeneios.demo or their staff code
+    students: admission number (e.g. SPS22041) - password is the date of birth DDMMYYYY
+    parents: registered mobile number or parent.<admission no>@... - password Parent@123
+Seeding runs only on an empty database.
+"""
+from __future__ import annotations
+
 import logging
-from datetime import datetime, timezone
+import math
+import random
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.security import get_password_hash
 from backend.app.models.entities import (
-    School,
-    User,
-    SchoolMembership,
-    ClassSection,
-    Subject,
-    Student,
-    ParentStudentLink,
-    InstructionalDisruption,
-    Assessment,
-    AssessmentSubmission,
-    StudentCompetencySnapshot,
-    CurriculumDay,
-    CrossCurricularProposal,
-    HomeworkRemediation,
-    Document,
-    QuestionBankItem,
-    ModelEvaluation,
-    ModelDeployment,
-    Notification,
-    AuditEvent,
+    Announcement, Assessment, AssessmentSubmission, AuditEvent, ClassSection,
+    Notification, ParentStudentLink, QuestionBankItem, School, SchoolMembership, Student, Subject,
+    TeacherAssignment, User, UserProfile,
+)
+from backend.app.modules.differentiated_homework.models import StudentAccountLink
+from backend.app.seed import school_content
+from backend.app.services.competency_update import (
+    DIMENSIONS, apply_observation, clamp, dimension_scores_from_questions, refresh_support_flag, snapshot,
 )
 
 logger = logging.getLogger(__name__)
 
+DOMAIN = "lumeneios.demo"
+SESSION = "2026-2027"
+# Kept for older imports (developer tools); the demonstration database uses per-role passwords below.
+DEFAULT_PASSWORD = "Teacher@123"
+PASSWORDS = {"admin": "Admin@123", "principal": "Principal@123", "teacher": "Teacher@123", "parent": "Parent@123"}
+RNG_SEED = 20260401
+
+SCHOOLS = [
+    {"id": "school-1", "code": "SPS", "slug": "sps", "name": "Sunrise Public School", "location": "Bengaluru",
+     "state": "Karnataka", "tier": "high-tech", "board": "CBSE",
+     "principal": ("user-principal-1", "Dr. Lakshmi Narayanan", "lakshmi.narayanan", "F"),
+     "description": "CBSE co-educational day school in Whitefield, Bengaluru. Classes 6-8 on LumenEIOS."},
+    {"id": "school-2", "code": "HVN", "slug": "hvn", "name": "Himalayan Vidya Niketan", "location": "Mandi",
+     "state": "Himachal Pradesh", "tier": "standard", "board": "CBSE",
+     "principal": ("user-principal-2", "Mr. Rajesh Thakur", "rajesh.thakur", "M"),
+     "description": "CBSE school in Mandi town serving nearby hill villages. Classes 6-8 on LumenEIOS."},
+]
+ADMIN = ("user-admin", "Ms. Ananya Rao", "ananya.rao", "Director of Academics, Shiksha Bharati Education Society")
+
+SUBJECTS = [
+    {"id": "sub-math", "name": "Mathematics", "code": "MATH", "grade": 6, "icon_name": "Calculator"},
+    {"id": "sub-sci", "name": "Science", "code": "SCI", "grade": 6, "icon_name": "FlaskConical"},
+    {"id": "sub-eng", "name": "English", "code": "ENG", "grade": 6, "icon_name": "BookOpen"},
+    {"id": "sub-sst", "name": "Social Science", "code": "SST", "grade": 6, "icon_name": "Globe"},
+    {"id": "sub-hin", "name": "Hindi", "code": "HIN", "grade": 6, "icon_name": "Languages"},
+]
+SUBJECT_IDS = [s["id"] for s in SUBJECTS]
+SUBJECT_NAME = {s["id"]: s["name"] for s in SUBJECTS}
+GRADES = (6, 7, 8)
+SECTIONS = ("A", "B")
+STUDENTS_PER_SECTION = 20
+
+ALL_SECTIONS = [(g, s) for g in GRADES for s in SECTIONS]
+LOWER = [(6, "A"), (6, "B"), (7, "A")]
+UPPER = [(7, "B"), (8, "A"), (8, "B")]
+
+# key, name, gender, subject, sections taught, class-teacher of
+TEACHER_ROSTER = {
+    "school-1": [
+        ("meera", "Mrs. Meera Krishnan", "F", "sub-math", LOWER, (6, "A")),
+        ("suresh", "Mr. Suresh Babu", "M", "sub-math", UPPER, (8, "A")),
+        ("garima", "Ms. Garima Sharma", "F", "sub-sci", LOWER, (7, "A")),
+        ("arvind", "Mr. Arvind Kulkarni", "M", "sub-sci", UPPER, (8, "B")),
+        ("priya", "Ms. Priya Menon", "F", "sub-eng", ALL_SECTIONS, (6, "B")),
+        ("irfan", "Mr. Mohammed Irfan", "M", "sub-sst", ALL_SECTIONS, (7, "B")),
+        ("sunita", "Mrs. Sunita Verma", "F", "sub-hin", ALL_SECTIONS, None),
+    ],
+    "school-2": [
+        ("kamlesh", "Mr. Kamlesh Thakur", "M", "sub-math", LOWER, (6, "A")),
+        ("neha", "Ms. Neha Sood", "F", "sub-math", UPPER, (8, "A")),
+        ("vikram", "Mr. Vikram Chauhan", "M", "sub-sci", LOWER, (7, "A")),
+        ("pooja", "Mrs. Pooja Katoch", "F", "sub-sci", UPPER, (8, "B")),
+        ("preeti", "Ms. Preeti Negi", "F", "sub-eng", ALL_SECTIONS, (6, "B")),
+        ("rohit", "Mr. Rohit Sharma", "M", "sub-sst", ALL_SECTIONS, (7, "B")),
+        ("anjali", "Mrs. Anjali Guleria", "F", "sub-hin", ALL_SECTIONS, None),
+    ],
+}
+
+# Shape used by syllabus_seed.teaching_assignments (Mathematics/Science teacher plans for Classes 6-8).
+TEACHERS = [
+    {"key": key, "name": name, "school": school_id, "subject": subject,
+     "grades": sorted({g for g, _ in sections}),
+     "designation": f"{SUBJECT_NAME[subject]} teacher, Classes {', '.join(f'{g}-{s}' for g, s in sections)}"}
+    for school_id, roster in TEACHER_ROSTER.items()
+    for key, name, _g, subject, sections, _ct in roster
+]
+
+# The one-click demonstration personas on the sign-in page (also the developer role-switch targets).
+FEATURED = {"school": "school-1", "teacher": "garima", "student": (7, "A", 1)}
+ROOT_PERSONA_EMAILS = {
+    "admin": f"ananya.rao@trust.{DOMAIN}",
+    "principal": f"lakshmi.narayanan@sps.{DOMAIN}",
+    "teacher": f"garima.sharma@sps.{DOMAIN}",
+    "student": f"gurleen.kaur@sps.{DOMAIN}",
+    "parent": f"harpreet.kaur@sps.{DOMAIN}",
+}
+
+NAMES = {
+    "school-1": {
+        "M": ["Aarav", "Vihaan", "Aditya", "Arjun", "Rohan", "Karthik", "Siddharth", "Pranav", "Varun", "Nikhil",
+              "Ishaan", "Harsha", "Rahul", "Abhinav", "Kiran", "Shreyas", "Tejas", "Akash", "Dhruv", "Yash",
+              "Agam", "Pranay", "Tanav", "Sai", "Manish", "Darshan", "Gautam", "Rithvik", "Naveen", "Om"],
+        "F": ["Ananya", "Diya", "Ishita", "Kavya", "Meghana", "Nandini", "Pooja", "Riya", "Sneha", "Tanvi",
+              "Aditi", "Bhavana", "Divya", "Harini", "Keerthana", "Lakshmi", "Navya", "Prerna", "Sanjana", "Shruti",
+              "Grishma", "Vaishnavi", "Anika", "Aishwarya", "Deepika", "Sahana", "Spoorthi", "Varsha", "Mahika", "Tara"],
+        "surnames": ["Rao", "Reddy", "Iyer", "Nair", "Gowda", "Shetty", "Kulkarni", "Hegde", "Menon", "Pillai",
+                     "Sharma", "Patel", "Joshi", "Bhat", "Naidu", "Krishnan", "Kumar", "Das", "Mehta", "Prasad",
+                     "Murthy", "Srinivasan", "Desai", "Acharya"],
+    },
+    "school-2": {
+        "M": ["Aryan", "Ayush", "Ansh", "Kartik", "Mohit", "Nitin", "Pankaj", "Rajat", "Sahil", "Tushar",
+              "Vikas", "Abhishek", "Deepak", "Himanshu", "Lakshay", "Naman", "Rishabh", "Sourav", "Tanmay", "Yuvraj",
+              "Aman", "Harsh", "Kunal", "Manav", "Parth", "Ritik", "Shubham", "Vishal", "Kabir", "Dev"],
+        "F": ["Aarti", "Anjali", "Bhumika", "Diksha", "Ekta", "Garima", "Isha", "Jyoti", "Kanika", "Kritika",
+              "Mansi", "Neha", "Palak", "Ritika", "Sakshi", "Shivani", "Simran", "Tanya", "Vanshika", "Muskan",
+              "Akriti", "Bhavna", "Chhavi", "Ishika", "Komal", "Nikita", "Pallavi", "Radhika", "Srishti", "Yashika"],
+        "surnames": ["Thakur", "Sharma", "Katoch", "Guleria", "Rana", "Chauhan", "Verma", "Negi", "Sood", "Kapoor",
+                     "Pathania", "Jamwal", "Bhardwaj", "Dogra", "Kaushal", "Mandyal", "Saini", "Walia", "Thakur",
+                     "Sharma", "Rana", "Chandel"],
+    },
+}
+FATHER_NAMES = ["Ramesh", "Suresh", "Mahesh", "Rajesh", "Anil", "Sunil", "Vijay", "Sanjay", "Ashok", "Manoj",
+                "Prakash", "Rakesh", "Deepak", "Naresh", "Girish", "Venkatesh", "Ravi", "Sandeep", "Ajay", "Pradeep"]
+MOTHER_NAMES = ["Sunita", "Kavita", "Anita", "Rekha", "Seema", "Meena", "Lata", "Geeta", "Shobha", "Usha",
+                "Padma", "Radha", "Savita", "Nirmala", "Shalini", "Pushpa", "Asha", "Veena", "Jaya", "Kamla"]
+MODALITIES = ["Visual", "Auditory", "Reading/Writing", "Kinesthetic"]
+
+# Assessment calendar of the session. kind: (title, date, cycle, chapters-by-month, questions, scanned?)
+ASSESSMENT_PLAN = [
+    ("Baseline Diagnostic Test", "2026-04-15", 1, 5, 8, False),
+    ("Class Test 1", "2026-05-20", 1, 5, 8, False),
+    ("Periodic Test 1", "2026-07-24", 2, 7, 12, False),
+    ("Written Assignment (handwritten)", "2026-08-28", 2, 8, 4, True),
+    ("Half-Yearly Examination", "2026-09-25", 3, 9, 16, False),
+    ("Class Test 2", "2026-10-30", 3, 10, 8, False),
+]
+OPEN_WORK = [  # scheduled, not yet graded: students submit these (handwritten upload, OCR, evaluator)
+    ("Worksheet: {chapter}", "2026-11-20", 4, 11, 4, ("sub-math", "sub-sci")),
+    ("Periodic Test 2", "2026-12-08", 4, 11, 6, tuple(SUBJECT_IDS)),
+]
+TODAY = date(2026, 11, 16)
+
+# Holidays and examination weeks (Time-Aware Engine capacity). Mandi breaks in winter; Bengaluru in summer.
+SCHOOL_CALENDAR = {
+    "school-1": [
+        {"id": "sum", "type": "HOLIDAY", "label": "Summer vacation", "start": "2026-05-01", "end": "2026-05-31"},
+        {"id": "pt1", "type": "EXAM", "label": "Periodic Test 1", "start": "2026-07-20", "end": "2026-07-25"},
+        {"id": "hy", "type": "EXAM", "label": "Half-Yearly Examination", "start": "2026-09-21", "end": "2026-10-01"},
+        {"id": "dus", "type": "HOLIDAY", "label": "Dasara holidays", "start": "2026-10-17", "end": "2026-10-25"},
+        {"id": "dee", "type": "HOLIDAY", "label": "Deepavali", "start": "2026-11-08", "end": "2026-11-10"},
+        {"id": "pt2", "type": "EXAM", "label": "Periodic Test 2", "start": "2026-12-08", "end": "2026-12-12"},
+        {"id": "ann", "type": "EXAM", "label": "Annual Examination", "start": "2027-02-22", "end": "2027-03-10"},
+    ],
+    "school-2": [
+        {"id": "sum", "type": "HOLIDAY", "label": "Summer break", "start": "2026-06-10", "end": "2026-06-30"},
+        {"id": "pt1", "type": "EXAM", "label": "Periodic Test 1", "start": "2026-07-20", "end": "2026-07-25"},
+        {"id": "hy", "type": "EXAM", "label": "Half-Yearly Examination", "start": "2026-09-21", "end": "2026-10-01"},
+        {"id": "dus", "type": "HOLIDAY", "label": "Dussehra and Diwali", "start": "2026-10-19", "end": "2026-10-23"},
+        {"id": "pt2", "type": "EXAM", "label": "Periodic Test 2", "start": "2026-12-08", "end": "2026-12-12"},
+        {"id": "win", "type": "HOLIDAY", "label": "Winter vacation", "start": "2026-12-24", "end": "2027-02-10"},
+        {"id": "ann", "type": "EXAM", "label": "Annual Examination", "start": "2027-02-22", "end": "2027-03-06"},
+    ],
+}
+
+
+def class_id(school_id: str, grade: int, section: str = "A") -> str:
+    return f"class-{_school(school_id)['slug']}-{grade}{section.lower()}"
+
+
+def _school(school_id: str) -> dict:
+    return next(s for s in SCHOOLS if s["id"] == school_id)
+
+
+def staff_email(school_id: Optional[str], handle: str) -> str:
+    return f"{handle}@{_school(school_id)['slug'] if school_id else 'trust'}.{DOMAIN}"
+
+
+def teacher_user_id(key: str) -> str:
+    return f"user-teacher-{key}"
+
+
+def _handle(name: str) -> str:
+    parts = [p for p in name.replace(".", "").split() if p not in {"Mr", "Mrs", "Ms", "Dr"}]
+    return ".".join(p.lower() for p in parts)
+
+
+# ---------------------------------------------------------------------------------------------------
+# Students (deterministic)
+# ---------------------------------------------------------------------------------------------------
+
+def build_students() -> List[dict]:
+    rng = random.Random(RNG_SEED)
+    students: List[dict] = []
+    for school in SCHOOLS:
+        pool = NAMES[school["id"]]
+        used_names: set = set()
+        serial = 0
+        for grade, section in ALL_SECTIONS:
+            names = []
+            while len(names) < STUDENTS_PER_SECTION:
+                gender = "F" if len(names) % 2 else "M"
+                first = rng.choice(pool[gender])
+                last = rng.choice(pool["surnames"])
+                full = f"{first} {last}"
+                if full in used_names:
+                    continue
+                used_names.add(full)
+                names.append((first, last, gender))
+            if school["id"] == FEATURED["school"] and (grade, section) == FEATURED["student"][:2]:
+                names[0] = ("Gurleen", "Kaur", "F")
+            names.sort(key=lambda n: (n[0], n[1]))
+            for roll, (first, last, gender) in enumerate(names, start=1):
+                serial += 1
+                joined = 2026 - (grade - 6) - rng.choice([0, 0, 0, 1, 2])
+                admission = f"{school['code']}{str(joined)[-2:]}{serial:03d}"
+                birth_year = 2026 - (grade + 5) - (1 if rng.random() < 0.3 else 0)
+                dob = date(birth_year, rng.randint(1, 12), rng.randint(1, 28))
+                # Mandi starts a little lower (rural catchment, monsoon closures) but improves faster.
+                ability = rng.gauss(66 if school["id"] == "school-1" else 62, 12)
+                student = {
+                    "id": f"stu-{admission.lower()}",
+                    "admission_no": admission,
+                    "first": first, "last": last, "name": f"{first} {last}", "gender": gender,
+                    "school_id": school["id"], "grade": grade, "section": section, "roll_no": roll,
+                    "class_id": class_id(school["id"], grade, section), "dob": dob.isoformat(),
+                    "joined": joined,
+                    "ability": max(32.0, min(95.0, ability)),
+                    "dim": {d: rng.gauss(0, 7) for d in DIMENSIONS},
+                    "subj": {s: rng.gauss(0, 8) for s in SUBJECT_IDS},
+                    "growth": rng.gauss(4 if school["id"] == "school-1" else 6.5, 5),
+                    "attendance": round(min(99.0, max(71.0, rng.gauss(90, 6))), 1),
+                    "homework": round(min(100.0, max(45.0, rng.gauss(84, 12))), 1),
+                    "modality": rng.choice(MODALITIES),
+                    "father": f"{rng.choice(FATHER_NAMES)} {last}",
+                    "mother": f"{rng.choice(MOTHER_NAMES)} {last}",
+                    "mobile": f"9{rng.randint(100000000, 999999999)}",
+                }
+                if first == "Gurleen" and last == "Kaur":
+                    student.update(father="Harjit Singh", mother="Harpreet Kaur", ability=63.0,
+                                   dim={"LU": 8, "CU": 3, "AU": -18, "CT": -4}, growth=6.0)
+                student["guardian"] = student["mother"] if rng.random() < 0.55 else student["father"]
+                if first == "Gurleen" and last == "Kaur":
+                    student["guardian"] = "Harpreet Kaur"
+                students.append(student)
+    return students
+
+
+def student_email(s: dict) -> str:
+    return f"{s['first'].lower()}.{s['last'].lower()}.{s['admission_no'][-3:]}@{_school(s['school_id'])['slug']}.{DOMAIN}"
+
+
+def parent_email(s: dict) -> str:
+    return f"parent.{s['admission_no'].lower()}@{_school(s['school_id'])['slug']}.{DOMAIN}"
+
+
+def is_featured_student(s: dict) -> bool:
+    return s["name"] == "Gurleen Kaur" and s["school_id"] == FEATURED["school"]
+
+
+def roster_users() -> List[dict]:
+    """Every login account (without passwords), in display order. Used by the seed and the credentials sheet."""
+    users = [{"id": ADMIN[0], "email": ROOT_PERSONA_EMAILS["admin"], "username": "ADMIN", "name": ADMIN[1],
+              "role": "admin", "school_id": "school-1", "designation": ADMIN[3], "password": PASSWORDS["admin"]}]
+    for school in SCHOOLS:
+        pid, pname, handle, _g = school["principal"]
+        users.append({"id": pid, "email": staff_email(school["id"], handle), "username": f"{school['code']}-PRINCIPAL",
+                      "name": pname, "role": "principal", "school_id": school["id"],
+                      "designation": f"Principal, {school['name']}, {school['location']}", "password": PASSWORDS["principal"]})
+    for school_id, roster in TEACHER_ROSTER.items():
+        code = _school(school_id)["code"]
+        for n, (key, name, _g, subject, sections, ct) in enumerate(roster, start=1):
+            users.append({"id": teacher_user_id(key), "email": staff_email(school_id, _handle(name)),
+                          "username": f"{code}-T{n:02d}", "name": name, "role": "teacher", "school_id": school_id,
+                          "designation": f"{SUBJECT_NAME[subject]} teacher" + (f" · Class teacher {ct[0]}-{ct[1]}" if ct else ""),
+                          "password": PASSWORDS["teacher"]})
+    for s in build_students():
+        featured = is_featured_student(s)
+        dob = date.fromisoformat(s["dob"])
+        users.append({"id": s["id"], "email": ROOT_PERSONA_EMAILS["student"] if featured else student_email(s),
+                      "username": s["admission_no"], "name": s["name"], "role": "student", "school_id": s["school_id"],
+                      "designation": f"Student, Class {s['grade']}-{s['section']}, Roll {s['roll_no']}",
+                      "password": dob.strftime("%d%m%Y")})
+        users.append({"id": f"par-{s['admission_no'].lower()}",
+                      "email": ROOT_PERSONA_EMAILS["parent"] if featured else parent_email(s),
+                      "username": s["mobile"], "name": s["guardian"], "role": "parent", "school_id": s["school_id"],
+                      "designation": f"Parent of {s['name']} ({s['grade']}-{s['section']})", "password": PASSWORDS["parent"]})
+    return users
+
+
+# ---------------------------------------------------------------------------------------------------
+# Marks model
+# ---------------------------------------------------------------------------------------------------
+
+def _expected_score(s: dict, subject_id: str, dim: str, when: date) -> float:
+    progress = max(0.0, min(1.0, (when - date(2026, 4, 1)).days / 230))
+    return s["ability"] + s["dim"][dim] + s["subj"][subject_id] + s["growth"] * progress
+
+
+def _awarded(rng: random.Random, expected: float, marks: int) -> int:
+    p = max(0.0, min(1.0, (expected + rng.gauss(0, 8)) / 100))
+    # Partial credit on multi-mark questions; MCQs (1 mark) are right or wrong.
+    if marks == 1:
+        return 1 if rng.random() < p else 0
+    return int(round(min(marks, max(0, marks * p + rng.gauss(0, 0.35)))))
+
+
+def _feedback(pct: int, weakest: Optional[str]) -> str:
+    names = {"LU": "reading the question carefully", "CU": "explaining the underlying concept",
+             "AU": "applying the method to new problems", "CT": "justifying answers with reasons"}
+    tip = f" Focus next on {names[weakest]}." if weakest else ""
+    if pct >= 85:
+        return "Excellent work - clear and accurate answers." + tip
+    if pct >= 70:
+        return "Good work. A few steps were missing." + tip
+    if pct >= 50:
+        return "Satisfactory. Revise the chapter and practise more questions." + tip
+    return "Needs improvement. Please meet the teacher for extra practice." + tip
+
+
+def _question_payload(q: tuple, chapter: str, grade: int) -> dict:
+    comp, qtype, text, options, answer, rubric, marks, bloom = q
+    return {"text": text, "type": qtype, "options": list(options), "correct_answer": answer, "marking_rubric": rubric,
+            "marks": marks, "competency": comp, "bloom_level": bloom, "topic": chapter, "grade": grade}
+
+
+def _pick_questions(rng: random.Random, grade: int, subject_id: str, by_month: int, count: int,
+                    prefer_latest: bool = False) -> List[dict]:
+    chapters = school_content.taught_chapters(grade, subject_id, by_month) or school_content.chapters(grade, subject_id)[:1]
+    pool = [(c["title"], q) for c in chapters for q in c["questions"]]
+    if prefer_latest:
+        latest = chapters[-1]["title"]
+        pool = [p for p in pool if p[0] == latest] or pool
+    picked: List[Tuple[str, tuple]] = []
+    # Cover every competency before repeating one.
+    by_comp: Dict[str, List[Tuple[str, tuple]]] = {}
+    for item in pool:
+        by_comp.setdefault(item[1][0], []).append(item)
+    for comps in by_comp.values():
+        rng.shuffle(comps)
+    order = list(DIMENSIONS)
+    while len(picked) < min(count, len(pool)):
+        for comp in order:
+            if by_comp.get(comp) and len(picked) < count:
+                picked.append(by_comp[comp].pop())
+    return [_question_payload(q, chapter, grade) for chapter, q in picked]
+
+
+# ---------------------------------------------------------------------------------------------------
+# Seed
+# ---------------------------------------------------------------------------------------------------
+
+def _hash_all(passwords: List[str]) -> Dict[str, str]:
+    unique = sorted(set(passwords))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return dict(zip(unique, pool.map(get_password_hash, unique)))
+
+
+def _dt(day: str, hour: int = 10) -> datetime:
+    return datetime.fromisoformat(day).replace(hour=hour, tzinfo=timezone.utc)
+
+
+async def ensure_classic_demo_student_link(session: AsyncSession) -> None:
+    """Kept for startup compatibility. The demonstration roster creates every StudentAccountLink itself."""
+    return None
+
 
 async def seed_database_if_empty(session: AsyncSession) -> None:
-    # Check if schools already exist
-    result = await session.execute(select(School))
-    existing_school = result.scalars().first()
-    if existing_school:
-        await ensure_source_documents_and_question_bank(session)
-        logger.info("Database already seeded. Verified source documents and question bank.")
+    if (await session.execute(select(School.id).limit(1))).first():
+        logger.info("Database already seeded.")
         return
+    logger.info("Empty database: building the demonstration schools (this takes about a minute)...")
+    rng = random.Random(RNG_SEED + 1)
+    students = build_students()
+    users = roster_users()
+    hashes = _hash_all([u["password"] for u in users])
 
-    logger.info("Empty database detected. Seeding comprehensive LumenEIOS reference dataset...")
+    # Schools, subjects
+    for school in SCHOOLS:
+        pid, pname, _h, _g = school["principal"]
+        session.add(School(
+            id=school["id"], name=school["name"], location=school["location"], state=school["state"],
+            infrastructure_tier=school["tier"], academic_year=SESSION, principal_id=pid, principal_name=pname,
+            student_count=sum(1 for s in students if s["school_id"] == school["id"]),
+            teacher_count=len(TEACHER_ROSTER[school["id"]]), class_count=len(ALL_SECTIONS),
+            pacing_risk="medium" if school["id"] == "school-2" else "low", description=school["description"],
+            official_working_days=220,
+        ))
+    for subject in SUBJECTS:
+        session.add(Subject(**subject))
+    from backend.app.models.teacher_planning import SchoolPlanCalendar
+    for school in SCHOOLS:
+        session.add(SchoolPlanCalendar(
+            school_id=school["id"], academic_year=SESSION, version=1, created_by=school["principal"][0],
+            reason="Academic calendar 2026-27 approved by the principal",
+            config={"year": SESSION, "start": "2026-04-01", "end": "2027-03-31", "weekdays": [1, 2, 3, 4, 5, 6],
+                    "periodsPerDay": 8, "periodMinutes": 40, "horizonDays": None,
+                    "subjectPeriodsPerDay": {"Mathematics": 2, "Science": 2},
+                    "entries": SCHOOL_CALENDAR[school["id"]]},
+        ))
+    await session.flush()
 
-    # 1. Schools
-    schools = [
-        School(
-            id="school-1",
-            name="Sunrise Public School",
-            location="Indiranagar, Bengaluru",
-            state="Karnataka",
-            infrastructure_tier="high-tech",
-            academic_year="2026-2027",
-            principal_id="user-principal-1",
-            principal_name="Dr. Sunita Deshmukh",
-            student_count=850,
-            teacher_count=42,
-            class_count=18,
-            pacing_risk="medium",
-            description="Premier smart-school with interactive digital boards, 1:1 student tablets, and high-speed fiber connectivity.",
-            official_working_days=220,
-        ),
-        School(
-            id="school-2",
-            name="Green Valley Academy",
-            location="Kothrud, Pune",
-            state="Maharashtra",
-            infrastructure_tier="standard",
-            academic_year="2026-2027",
-            principal_id="user-principal-2",
-            principal_name="Prof. Arvind Kulkarni",
-            student_count=640,
-            teacher_count=32,
-            class_count=14,
-            pacing_risk="low",
-            description="CBSE affiliated school with shared computer laboratories, projector-equipped classrooms, and blended learning models.",
-            official_working_days=220,
-        ),
-        School(
-            id="school-3",
-            name="Pragati Government Senior Secondary School",
-            location="Sanganer, Jaipur",
-            state="Rajasthan",
-            infrastructure_tier="low-tech",
-            academic_year="2026-2027",
-            principal_id="user-principal-3",
-            principal_name="Shri Ramswaroop Sharma",
-            student_count=520,
-            teacher_count=24,
-            class_count=12,
-            pacing_risk="high",
-            description="State government school utilizing offline printed student workbooks, periodic mobile scans, and community solar lanterns.",
-            official_working_days=220,
-        ),
-        School(
-            id="school-4",
-            name="Vidya Niketan School",
-            location="Gomti Nagar, Lucknow",
-            state="Uttar Pradesh",
-            infrastructure_tier="standard",
-            academic_year="2026-2027",
-            principal_id="user-principal-4",
-            principal_name="Mrs. Rekha Srivastava",
-            student_count=710,
-            teacher_count=35,
-            class_count=15,
-            pacing_risk="low",
-            description="Progressive institution with hybrid smart classrooms, science tinkering labs, and structured peer-led study groups.",
-            official_working_days=220,
-        ),
-        School(
-            id="school-5",
-            name="Udaan Learning Government School",
-            location="Namkum, Ranchi",
-            state="Jharkhand",
-            infrastructure_tier="low-tech",
-            academic_year="2026-2027",
-            principal_id="user-principal-5",
-            principal_name="Shri Birsa Munda",
-            student_count=430,
-            teacher_count=18,
-            class_count=10,
-            pacing_risk="high",
-            description="Tribal welfare initiative school focusing on foundational literacy and numeracy with physical worksheets and vernacular audio aides.",
-            official_working_days=220,
-        ),
-    ]
-    for s in schools:
-        session.add(s)
-
-    # 2. Users & Memberships
-    default_hash = get_password_hash("demo123")
-    users = [
-        User(
-            id="user-admin",
-            email="admin@lumeneios.demo",
-            name="Dr. Rajesh Sharma",
-            hashed_password=default_hash,
-            role="admin",
-            school_id="school-1",
-            designation="Director of Academic Innovation & State Lead",
-            avatar="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-        ),
-        User(
-            id="user-principal-1",
-            email="principal@lumeneios.demo",
-            name="Dr. Sunita Deshmukh",
-            hashed_password=default_hash,
-            role="principal",
-            school_id="school-1",
-            designation="Principal, Sunrise Public School",
-            avatar="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80",
-        ),
-        User(
-            id="user-teacher-1",
-            email="teacher@lumeneios.demo",
-            name="Vikram Sengupta",
-            hashed_password=default_hash,
-            role="teacher",
-            school_id="school-1",
-            designation="TGT Mathematics & Science (Grade 8 & 9 Lead)",
-            avatar="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
-        ),
-        User(
-            id="user-student-1",
-            email="student@lumeneios.demo",
-            name="Aarav Patel",
-            hashed_password=default_hash,
-            role="student",
-            school_id="school-1",
-            designation="Student, Grade 8 Section A",
-            avatar="https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150&auto=format&fit=crop&q=80",
-        ),
-        User(
-            id="user-parent-1",
-            email="parent@lumeneios.demo",
-            name="Meera Patel",
-            hashed_password=default_hash,
-            role="parent",
-            school_id="school-1",
-            designation="Parent / Guardian",
-            avatar="https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=80",
-        ),
-        User(
-            id="user-teacher-2",
-            email="anjali.roy@lumeneios.demo",
-            name="Anjali Roy",
-            hashed_password=default_hash,
-            role="teacher",
-            school_id="school-1",
-            designation="TGT English & Social Science",
-            avatar="https://images.unsplash.com/photo-1580489944761-15a19d654956?w=150&auto=format&fit=crop&q=80",
-        ),
-        User(
-            id="user-teacher-3",
-            email="kavita.meena@lumeneios.demo",
-            name="Kavita Meena",
-            hashed_password=default_hash,
-            role="teacher",
-            school_id="school-3",
-            designation="Senior Teacher (Mathematics)",
-            avatar="https://images.unsplash.com/photo-1548142813-c348350df52b?w=150&auto=format&fit=crop&q=80",
-        ),
-    ]
+    # Accounts
     for u in users:
-        session.add(u)
+        session.add(User(id=u["id"], email=u["email"], username=u["username"], name=u["name"], role=u["role"],
+                         school_id=u["school_id"], designation=u["designation"], hashed_password=hashes[u["password"]]))
+    await session.flush()
+    for u in users:
+        session.add(SchoolMembership(id=f"mem-{u['id']}-{u['school_id']}", user_id=u["id"],
+                                     school_id=u["school_id"], role=u["role"]))
+    session.add(SchoolMembership(id="mem-user-admin-school-2", user_id=ADMIN[0], school_id="school-2", role="admin"))
 
-    # Memberships
-    memberships = [
-        SchoolMembership(id="mem-admin-1", user_id="user-admin", school_id="school-1", role="admin"),
-        SchoolMembership(id="mem-admin-2", user_id="user-admin", school_id="school-2", role="admin"),
-        SchoolMembership(id="mem-admin-3", user_id="user-admin", school_id="school-3", role="admin"),
-        SchoolMembership(id="mem-admin-4", user_id="user-admin", school_id="school-4", role="admin"),
-        SchoolMembership(id="mem-admin-5", user_id="user-admin", school_id="school-5", role="admin"),
-        SchoolMembership(id="mem-prin-1", user_id="user-principal-1", school_id="school-1", role="principal"),
-        SchoolMembership(id="mem-teach-1", user_id="user-teacher-1", school_id="school-1", role="teacher"),
-        SchoolMembership(id="mem-stud-1", user_id="user-student-1", school_id="school-1", role="student"),
-        SchoolMembership(id="mem-par-1", user_id="user-parent-1", school_id="school-1", role="parent"),
-        SchoolMembership(id="mem-teach-2", user_id="user-teacher-2", school_id="school-1", role="teacher"),
-        SchoolMembership(id="mem-teach-3", user_id="user-teacher-3", school_id="school-3", role="teacher"),
-    ]
-    for m in memberships:
-        session.add(m)
+    # Classes and teacher allocation
+    teacher_names = {teacher_user_id(k): n for r in TEACHER_ROSTER.values() for k, n, *_ in r}
+    for school in SCHOOLS:
+        class_teacher = {ct: teacher_user_id(k) for k, _n, _g, _s, _sec, ct in TEACHER_ROSTER[school["id"]] if ct}
+        for grade, section in ALL_SECTIONS:
+            ct_id = class_teacher.get((grade, section))
+            session.add(ClassSection(
+                id=class_id(school["id"], grade, section), school_id=school["id"], grade=grade, section=section,
+                name=f"Class {grade}-{section}", class_teacher_id=ct_id, class_teacher_name=teacher_names.get(ct_id),
+                student_count=STUDENTS_PER_SECTION, subject_ids_json=list(SUBJECT_IDS),
+            ))
+    await session.flush()
+    teacher_of: Dict[Tuple[str, int, str, str], str] = {}
+    for school_id, roster in TEACHER_ROSTER.items():
+        for key, _n, _g, subject, sections, _ct in roster:
+            for grade, section in sections:
+                session.add(TeacherAssignment(teacher_id=teacher_user_id(key), school_id=school_id,
+                                              class_id=class_id(school_id, grade, section), subject_id=subject))
+                teacher_of[(school_id, grade, section, subject)] = teacher_user_id(key)
 
-    # 3. Classes
-    classes = [
-        ClassSection(
-            id="class-8a",
-            school_id="school-1",
-            grade=8,
-            section="A",
-            name="Class 8-A",
-            class_teacher_id="user-teacher-1",
-            class_teacher_name="Vikram Sengupta",
-            student_count=32,
-            subject_ids_json=["sub-math", "sub-sci", "sub-eng", "sub-sst"],
-        ),
-        ClassSection(
-            id="class-8b",
-            school_id="school-1",
-            grade=8,
-            section="B",
-            name="Class 8-B",
-            class_teacher_id="user-teacher-2",
-            class_teacher_name="Anjali Roy",
-            student_count=30,
-            subject_ids_json=["sub-math", "sub-sci", "sub-eng", "sub-sst"],
-        ),
-        ClassSection(
-            id="class-9b",
-            school_id="school-1",
-            grade=9,
-            section="B",
-            name="Class 9-B",
-            class_teacher_id="user-teacher-1",
-            class_teacher_name="Vikram Sengupta",
-            student_count=28,
-            subject_ids_json=["sub-math", "sub-sci"],
-        ),
-        ClassSection(
-            id="class-7a",
-            school_id="school-1",
-            grade=7,
-            section="A",
-            name="Class 7-A",
-            class_teacher_id="user-teacher-2",
-            class_teacher_name="Anjali Roy",
-            student_count=31,
-            subject_ids_json=["sub-math", "sub-sci", "sub-eng"],
-        ),
-        ClassSection(
-            id="class-pragati-8",
-            school_id="school-3",
-            grade=8,
-            section="A",
-            name="Class 8-Gov",
-            class_teacher_id="user-teacher-3",
-            class_teacher_name="Kavita Meena",
-            student_count=29,
-            subject_ids_json=["sub-math", "sub-sci"],
-        ),
-        ClassSection(
-            id="class-greenvalley-8",
-            school_id="school-2",
-            grade=8,
-            section="A",
-            name="Class 8-GVA",
-            class_teacher_id="user-teacher-1",
-            class_teacher_name="Sanjay Deshmukh",
-            student_count=34,
-            subject_ids_json=["sub-math", "sub-sci"],
-        ),
-    ]
-    for c in classes:
-        session.add(c)
+    # Students, parents, links, profiles
+    for s in students:
+        session.add(Student(
+            id=s["id"], school_id=s["school_id"], class_id=s["class_id"], class_name=f"Class {s['grade']}-{s['section']}",
+            name=s["name"], roll_no=s["roll_no"], admission_no=s["admission_no"], date_of_birth=s["dob"],
+            gender=s["gender"], attendance_pct=s["attendance"], learning_modality=s["modality"],
+            parent_id=f"par-{s['admission_no'].lower()}", homework_completion_rate=s["homework"],
+            lu_score=60, cu_score=60, au_score=60, ct_score=60, overall_score=60,
+            baseline_lu=60, baseline_cu=60, baseline_au=60, baseline_ct=60, baseline_overall=60,
+        ))
+    await session.flush()
+    for s in students:
+        pid = f"par-{s['admission_no'].lower()}"
+        session.add(ParentStudentLink(id=f"psl-{s['admission_no'].lower()}", parent_user_id=pid, student_id=s["id"]))
+        session.add(StudentAccountLink(user_id=s["id"], student_id=s["id"], created_by=ADMIN[0]))
+        session.add(UserProfile(user_id=pid, phone=s["mobile"], address=f"{_school(s['school_id'])['location']}"))
+        session.add(UserProfile(user_id=s["id"], date_of_birth=date.fromisoformat(s["dob"])))
 
-    # 4. Subjects
-    subjects = [
-        Subject(id="sub-math", name="Mathematics", code="MATH-8", grade=8, icon_name="Calculator"),
-        Subject(id="sub-sci", name="Science & Discovery", code="SCI-8", grade=8, icon_name="FlaskConical"),
-        Subject(id="sub-eng", name="English Communication", code="ENG-8", grade=8, icon_name="BookOpen"),
-        Subject(id="sub-sst", name="Social Studies & Civics", code="SST-8", grade=8, icon_name="Globe"),
-    ]
-    for sub in subjects:
-        session.add(sub)
+    # Question bank (teacher-written, topic and grade tagged)
+    for school in SCHOOLS:
+        for grade in GRADES:
+            for subject_id in SUBJECT_IDS:
+                author = teacher_of.get((school["id"], grade, "A", subject_id))
+                for chapter in school_content.chapters(grade, subject_id):
+                    for q in chapter["questions"]:
+                        p = _question_payload(q, chapter["title"], grade)
+                        session.add(QuestionBankItem(
+                            school_id=school["id"], subject_id=subject_id, text=p["text"], type=p["type"],
+                            options_json=p["options"], correct_answer=p["correct_answer"],
+                            marking_rubric=p["marking_rubric"], marks=p["marks"], competency=p["competency"],
+                            bloom_level=p["bloom_level"], topic=chapter["title"], grade=grade,
+                            source_document_ids_json=[], source_document_names_json=[
+                                f"NCERT {school_content.SUBJECT_BOOKS[subject_id]} (Class {grade})"],
+                            is_ai_generated=False, created_by=author,
+                        ))
+    await session.flush()
 
-    # 5. Students
-    student_records = [
-        Student(
-            id="user-student-1",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Aarav Patel",
-            roll_no=14,
-            gender="M",
-            attendance_pct=94.0,
-            lu_score=78,
-            cu_score=82,
-            au_score=70,
-            ct_score=65,
-            overall_score=74,
-            baseline_lu=68,
-            baseline_cu=72,
-            baseline_au=60,
-            baseline_ct=54,
-            baseline_overall=64,
-            learning_modality="Visual",
-            parent_id="user-parent-1",
-            homework_completion_rate=92.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-ananya",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Ananya Patel",
-            roll_no=15,
-            gender="F",
-            attendance_pct=96.0,
-            lu_score=88,
-            cu_score=84,
-            au_score=79,
-            ct_score=82,
-            overall_score=83,
-            baseline_lu=80,
-            baseline_cu=76,
-            baseline_au=70,
-            baseline_ct=72,
-            baseline_overall=75,
-            learning_modality="Reading/Writing",
-            parent_id="user-parent-1",
-            homework_completion_rate=98.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-3",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Rohan Gupta",
-            roll_no=27,
-            gender="M",
-            attendance_pct=86.0,
-            lu_score=52,
-            cu_score=76,
-            au_score=66,
-            ct_score=55,
-            overall_score=62,
-            baseline_lu=46,
-            baseline_cu=70,
-            baseline_au=58,
-            baseline_ct=50,
-            baseline_overall=56,
-            learning_modality="Kinesthetic",
-            parent_id="parent-3",
-            homework_completion_rate=70.0,
-            needs_support=True,
-            support_area="Language Understanding in multi-step Word Problems",
-        ),
-        Student(
-            id="student-4",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Priya Nair",
-            roll_no=22,
-            gender="F",
-            attendance_pct=91.0,
-            lu_score=85,
-            cu_score=62,
-            au_score=54,
-            ct_score=60,
-            overall_score=65,
-            baseline_lu=80,
-            baseline_cu=55,
-            baseline_au=48,
-            baseline_ct=52,
-            baseline_overall=59,
-            learning_modality="Auditory",
-            parent_id="parent-4",
-            homework_completion_rate=85.0,
-            needs_support=True,
-            support_area="Application Understanding in geometric proofs & units",
-        ),
-        Student(
-            id="student-5",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Devansh Kulkarni",
-            roll_no=8,
-            gender="M",
-            attendance_pct=98.0,
-            lu_score=92,
-            cu_score=94,
-            au_score=91,
-            ct_score=88,
-            overall_score=91,
-            baseline_lu=85,
-            baseline_cu=88,
-            baseline_au=82,
-            baseline_ct=80,
-            baseline_overall=84,
-            learning_modality="Visual",
-            parent_id="parent-5",
-            homework_completion_rate=100.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-6",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Kavya Raman",
-            roll_no=18,
-            gender="F",
-            attendance_pct=89.0,
-            lu_score=74,
-            cu_score=70,
-            au_score=68,
-            ct_score=62,
-            overall_score=69,
-            baseline_lu=68,
-            baseline_cu=62,
-            baseline_au=60,
-            baseline_ct=55,
-            baseline_overall=61,
-            learning_modality="Reading/Writing",
-            parent_id="parent-6",
-            homework_completion_rate=88.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-7",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Mohammad Farhan",
-            roll_no=20,
-            gender="M",
-            attendance_pct=82.0,
-            lu_score=58,
-            cu_score=65,
-            au_score=52,
-            ct_score=49,
-            overall_score=56,
-            baseline_lu=52,
-            baseline_cu=58,
-            baseline_au=45,
-            baseline_ct=42,
-            baseline_overall=49,
-            learning_modality="Kinesthetic",
-            parent_id="parent-7",
-            homework_completion_rate=65.0,
-            needs_support=True,
-            support_area="Application & Critical Thinking in Data Handling",
-        ),
-        Student(
-            id="student-8",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Tanvi Iyer",
-            roll_no=31,
-            gender="F",
-            attendance_pct=95.0,
-            lu_score=86,
-            cu_score=85,
-            au_score=80,
-            ct_score=83,
-            overall_score=84,
-            baseline_lu=78,
-            baseline_cu=77,
-            baseline_au=72,
-            baseline_ct=75,
-            baseline_overall=76,
-            learning_modality="Visual",
-            parent_id="parent-8",
-            homework_completion_rate=96.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-9",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Siddharth Mehra",
-            roll_no=29,
-            gender="M",
-            attendance_pct=90.0,
-            lu_score=71,
-            cu_score=75,
-            au_score=69,
-            ct_score=67,
-            overall_score=71,
-            baseline_lu=65,
-            baseline_cu=68,
-            baseline_au=62,
-            baseline_ct=60,
-            baseline_overall=64,
-            learning_modality="Auditory",
-            parent_id="parent-9",
-            homework_completion_rate=85.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-10",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Ishita Banerjee",
-            roll_no=16,
-            gender="F",
-            attendance_pct=97.0,
-            lu_score=94,
-            cu_score=90,
-            au_score=86,
-            ct_score=85,
-            overall_score=89,
-            baseline_lu=88,
-            baseline_cu=84,
-            baseline_au=79,
-            baseline_ct=78,
-            baseline_overall=82,
-            learning_modality="Reading/Writing",
-            parent_id="parent-10",
-            homework_completion_rate=100.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-11",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Aditya Chauhan",
-            roll_no=3,
-            gender="M",
-            attendance_pct=88.0,
-            lu_score=65,
-            cu_score=68,
-            au_score=60,
-            ct_score=58,
-            overall_score=63,
-            baseline_lu=60,
-            baseline_cu=62,
-            baseline_au=55,
-            baseline_ct=51,
-            baseline_overall=57,
-            learning_modality="Kinesthetic",
-            parent_id="parent-11",
-            homework_completion_rate=75.0,
-            needs_support=True,
-            support_area="Concept Understanding in Rational Numbers",
-        ),
-        Student(
-            id="student-12",
-            school_id="school-1",
-            class_id="class-8a",
-            class_name="Class 8-A",
-            name="Diya Nambiar",
-            roll_no=9,
-            gender="F",
-            attendance_pct=93.0,
-            lu_score=82,
-            cu_score=79,
-            au_score=76,
-            ct_score=74,
-            overall_score=78,
-            baseline_lu=75,
-            baseline_cu=71,
-            baseline_au=68,
-            baseline_ct=66,
-            baseline_overall=70,
-            learning_modality="Visual",
-            parent_id="parent-12",
-            homework_completion_rate=91.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-16",
-            school_id="school-1",
-            class_id="class-9b",
-            class_name="Class 9-B",
-            name="Arjun Das",
-            roll_no=4,
-            gender="M",
-            attendance_pct=91.0,
-            lu_score=76,
-            cu_score=80,
-            au_score=74,
-            ct_score=71,
-            overall_score=75,
-            baseline_lu=70,
-            baseline_cu=72,
-            baseline_au=66,
-            baseline_ct=63,
-            baseline_overall=68,
-            learning_modality="Visual",
-            parent_id="parent-16",
-            homework_completion_rate=88.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-17",
-            school_id="school-1",
-            class_id="class-9b",
-            class_name="Class 9-B",
-            name="Bhavna Joshi",
-            roll_no=7,
-            gender="F",
-            attendance_pct=94.0,
-            lu_score=83,
-            cu_score=85,
-            au_score=78,
-            ct_score=76,
-            overall_score=81,
-            baseline_lu=77,
-            baseline_cu=78,
-            baseline_au=70,
-            baseline_ct=68,
-            baseline_overall=73,
-            learning_modality="Reading/Writing",
-            parent_id="parent-17",
-            homework_completion_rate=92.0,
-            needs_support=False,
-        ),
-        Student(
-            id="student-18",
-            school_id="school-3",
-            class_id="class-pragati-8",
-            class_name="Class 8-Gov",
-            name="Mukesh Gurjar",
-            roll_no=12,
-            gender="M",
-            attendance_pct=79.0,
-            lu_score=48,
-            cu_score=58,
-            au_score=49,
-            ct_score=42,
-            overall_score=49,
-            baseline_lu=42,
-            baseline_cu=51,
-            baseline_au=41,
-            baseline_ct=36,
-            baseline_overall=43,
-            learning_modality="Kinesthetic",
-            parent_id="parent-18",
-            homework_completion_rate=60.0,
-            needs_support=True,
-            support_area="Foundational Language & Vernacular-to-English Maths Terms",
-        ),
-        Student(
-            id="student-19",
-            school_id="school-3",
-            class_id="class-pragati-8",
-            class_name="Class 8-Gov",
-            name="Geeta Kumari",
-            roll_no=10,
-            gender="F",
-            attendance_pct=83.0,
-            lu_score=55,
-            cu_score=64,
-            au_score=56,
-            ct_score=50,
-            overall_score=56,
-            baseline_lu=49,
-            baseline_cu=57,
-            baseline_au=48,
-            baseline_ct=43,
-            baseline_overall=49,
-            learning_modality="Visual",
-            parent_id="parent-19",
-            homework_completion_rate=72.0,
-            needs_support=True,
-            support_area="Application in real life measurements",
-        ),
-        Student(
-            id="student-20",
-            school_id="school-2",
-            class_id="class-greenvalley-8",
-            class_name="Class 8-GVA",
-            name="Kabir Thapar",
-            roll_no=17,
-            gender="M",
-            attendance_pct=93.0,
-            lu_score=84,
-            cu_score=81,
-            au_score=77,
-            ct_score=79,
-            overall_score=80,
-            baseline_lu=78,
-            baseline_cu=74,
-            baseline_au=69,
-            baseline_ct=71,
-            baseline_overall=73,
-            learning_modality="Auditory",
-            parent_id="parent-20",
-            homework_completion_rate=94.0,
-            needs_support=False,
-        ),
-    ]
-    for s in student_records:
-        session.add(s)
+    # Graded history: assessments, submissions, competency evolution
+    by_class: Dict[str, List[dict]] = {}
+    for s in students:
+        by_class.setdefault(s["class_id"], []).append(s)
+    student_rows = {row.id: row for row in (await session.execute(select(Student))).scalars().all()}
+    events: List[Tuple[date, int, str, dict, List[dict], Assessment]] = []
+    for school in SCHOOLS:
+        for grade, section in ALL_SECTIONS:
+            cid = class_id(school["id"], grade, section)
+            for subject_id in SUBJECT_IDS:
+                for n, (title, day, cycle, by_month, count, scanned) in enumerate(ASSESSMENT_PLAN):
+                    if scanned and subject_id not in ("sub-math", "sub-sci"):
+                        continue
+                    qrng = random.Random(f"{school['id']}-{grade}-{subject_id}-{n}")  # same paper for both sections
+                    questions = _pick_questions(qrng, grade, subject_id, by_month, count, prefer_latest=scanned)
+                    for i, q in enumerate(questions, start=1):
+                        q["id"] = f"q{i}"
+                    a = Assessment(
+                        id=f"asm-{cid[6:]}-{subject_id[4:]}-{n + 1}", school_id=school["id"], class_id=cid,
+                        subject_id=subject_id, title=f"{title} - {SUBJECT_NAME[subject_id]}", cycle_number=cycle,
+                        date=day, duration_minutes=30 if count <= 4 else (60 if count <= 6 else 120),
+                        total_marks=sum(q["marks"] for q in questions), status="graded",
+                        competency_focus_json=sorted({q["competency"] for q in questions}), questions_json=questions,
+                    )
+                    session.add(a)
+                    events.append((date.fromisoformat(day), n, subject_id, {"scanned": scanned, "title": title}, questions, a))
+    await session.flush()
 
-    # 6. Parent-Student Link
-    session.add(ParentStudentLink(id="psl-1", parent_user_id="user-parent-1", student_id="user-student-1"))
-    session.add(ParentStudentLink(id="psl-2", parent_user_id="user-parent-1", student_id="student-ananya"))
+    events.sort(key=lambda e: (e[0], e[1], e[2], e[5].class_id))
+    rounds: Dict[Tuple[date, int], list] = {}
+    for event in events:
+        rounds.setdefault((event[0], event[1]), []).append(event)
+    column = {"LU": "lu_score", "CU": "cu_score", "AU": "au_score", "CT": "ct_score"}
+    baseline_column = {"LU": "baseline_lu", "CU": "baseline_cu", "AU": "baseline_au", "CT": "baseline_ct"}
+    for (when, n), round_events in rounds.items():
+        baseline: Dict[str, Dict[str, List[int]]] = {}
+        touched: Dict[str, Assessment] = {}
+        title = round_events[0][3]["title"]
+        for _when, _n, subject_id, meta, questions, assessment in round_events:
+            for s in by_class[assessment.class_id]:
+                row = student_rows[s["id"]]
+                graded = []
+                for q in questions:
+                    got = _awarded(rng, _expected_score(s, subject_id, q["competency"], when), q["marks"])
+                    graded.append({"competency": q["competency"], "awarded_marks": got, "max_marks": q["marks"]})
+                obtained = sum(g["awarded_marks"] for g in graded)
+                total = assessment.total_marks
+                pct = round(100 * obtained / total) if total else 0
+                dims = dimension_scores_from_questions(graded)
+                weakest = min(dims, key=dims.get) if dims else None
+                if n == 0:  # Baseline diagnostic: averaged across subjects, applied after the round.
+                    bucket = baseline.setdefault(s["id"], {d: [] for d in DIMENSIONS})
+                    for d, v in dims.items():
+                        bucket[d].append(v)
+                else:
+                    # Same evidence weighting as live grading: bigger papers move the parameters more.
+                    apply_observation(row, dims, weight=round(0.1 + 0.3 * min(1.0, total / 25), 3))
+                sub = AssessmentSubmission(
+                    assessment_id=assessment.id, student_id=s["id"], student_name=s["name"], marks_obtained=obtained,
+                    total_marks=total, percentage=pct,
+                    lu_score=dims.get("LU", row.lu_score), cu_score=dims.get("CU", row.cu_score),
+                    au_score=dims.get("AU", row.au_score), ct_score=dims.get("CT", row.ct_score),
+                    overall_score=clamp(sum(dims.values()) / len(dims)) if dims else pct,
+                    feedback=_feedback(pct, weakest), submission_date=when.isoformat(), is_scanned=meta["scanned"],
+                )
+                sub.created_at = _dt(when.isoformat(), 15)
+                session.add(sub)
+                touched[s["id"]] = assessment
+        for student_id, bucket in baseline.items():
+            row = student_rows[student_id]
+            for d in DIMENSIONS:
+                value = clamp(sum(bucket[d]) / len(bucket[d])) if bucket[d] else 60
+                setattr(row, column[d], value)
+                setattr(row, baseline_column[d], value)
+            refresh_support_flag(row)
+            row.baseline_overall = row.overall_score
+        # One timeline snapshot per student per assessment round.
+        for student_id, assessment in touched.items():
+            session.add(snapshot(student_rows[student_id], cycle_number=assessment.cycle_number, subject_id=None,
+                                 assessment_id=None, submission_id=None,
+                                 notes=f"After {title} ({when.strftime('%d %b %Y')})",
+                                 recorded_at=_dt(when.isoformat(), 17)))
+        await session.flush()
 
-    # 7. Instructional Disruptions (16 Lost Days)
-    disruptions = [
-        InstructionalDisruption(
-            id="ltd-1",
-            school_id="school-1",
-            date="2026-08-14",
-            reason="Election Duties",
-            days_lost=5.0,
-            recorded_by="Dr. Sunita Deshmukh",
-            notes="State legislative assembly constituency polling booth setup and mandatory teacher presiding officer training.",
-        ),
-        InstructionalDisruption(
-            id="ltd-2",
-            school_id="school-1",
-            date="2026-09-04",
-            reason="Census Duties",
-            days_lost=3.0,
-            recorded_by="Vikram Sengupta",
-            notes="District statistical household census verification drive assigned to secondary faculty.",
-        ),
-        InstructionalDisruption(
-            id="ltd-3",
-            school_id="school-1",
-            date="2026-09-16",
-            reason="Extreme Weather",
-            days_lost=4.0,
-            recorded_by="Dr. Sunita Deshmukh",
-            notes="District collector safety directive due to urban flash flooding and heavy monsoon red alert.",
-        ),
-        InstructionalDisruption(
-            id="ltd-4",
-            school_id="school-1",
-            date="2026-10-02",
-            reason="Teacher Training",
-            days_lost=2.0,
-            recorded_by="Vikram Sengupta",
-            notes="NEP 2020 Competency-Based Assessment pedagogy workshop mandated by the state education board.",
-        ),
-        InstructionalDisruption(
-            id="ltd-5",
-            school_id="school-1",
-            date="2026-10-09",
-            reason="Health Drive",
-            days_lost=2.0,
-            recorded_by="Dr. Sunita Deshmukh",
-            notes="National deworming and adolescent nutritional screening conducted on campus by state health workers.",
-        ),
-    ]
-    for d in disruptions:
-        session.add(d)
+    # Open work students can submit now (handwritten upload -> OCR -> evaluator)
+    for school in SCHOOLS:
+        for grade, section in ALL_SECTIONS:
+            cid = class_id(school["id"], grade, section)
+            for n, (title, day, cycle, by_month, count, subjects) in enumerate(OPEN_WORK):
+                for subject_id in subjects:
+                    qrng = random.Random(f"open-{school['id']}-{grade}-{subject_id}-{n}")
+                    questions = _pick_questions(qrng, grade, subject_id, by_month, count, prefer_latest=(n == 0))
+                    for i, q in enumerate(questions, start=1):
+                        q["id"] = f"q{i}"
+                    chapter = questions[0]["topic"] if questions else "Revision"
+                    session.add(Assessment(
+                        id=f"asm-{cid[6:]}-{subject_id[4:]}-open{n + 1}", school_id=school["id"], class_id=cid,
+                        subject_id=subject_id, title=f"{title.format(chapter=chapter)} - {SUBJECT_NAME[subject_id]}",
+                        cycle_number=cycle, date=day, duration_minutes=40 if n == 0 else 60,
+                        # Worksheets are open for uploads now; Periodic Test 2 is announced but not open yet.
+                        total_marks=sum(q["marks"] for q in questions), status="scheduled" if n == 0 else "draft",
+                        competency_focus_json=sorted({q["competency"] for q in questions}), questions_json=questions,
+                    ))
 
-    # 8. Questions and Assessments
-    sample_questions = [
-        {
-            "id": "q-1",
-            "text": "A water tank is in the shape of a cuboid with length 4m, breadth 3m, and depth 2m. If water is poured at the rate of 60 liters per minute, how many hours will it take to fill the tank completely? (1 m³ = 1000 liters)",
-            "type": "practical",
-            "marks": 4,
-            "competency": "AU",
-            "bloomLevel": "Apply",
-            "correctAnswer": "Volume = 4 * 3 * 2 = 24 m³ = 24,000 L. Time = 24,000 / 60 = 400 minutes = 6 hours and 40 minutes.",
-        },
-        {
-            "id": "q-2",
-            "text": "Identify the multiplicative inverse of -13/19 and explain why the product of a rational number and its inverse is always 1.",
-            "type": "short",
-            "marks": 2,
-            "competency": "CU",
-            "bloomLevel": "Understand",
-            "correctAnswer": "-19/13. By definition, a/b * (b/a) = (a*b)/(b*a) = 1.",
-        },
-        {
-            "id": "q-3",
-            "text": "Read the following statement carefully: 'If all squares are rectangles, then all rectangular properties apply to squares, but all rectangles cannot be squares.' State whether this is valid and justify the linguistic condition using geometric definitions.",
-            "type": "descriptive",
-            "marks": 3,
-            "competency": "LU",
-            "bloomLevel": "Analyze",
-            "correctAnswer": "Statement is mathematically valid. Square has 4 equal sides and 90° angles; rectangle requires only opposite sides equal and 90° angles.",
-        },
-        {
-            "id": "q-4",
-            "text": "A farmer claims that doubling the perimeter of a rectangular crop field will always double its grazing area. Evaluate whether this claim is true or false using at least two mathematical examples.",
-            "type": "descriptive",
-            "marks": 5,
-            "competency": "CT",
-            "bloomLevel": "Evaluate",
-            "correctAnswer": "False. Uniform 2x scaling doubles perimeter but quadruples area (4A). Non-uniform changes result in variable areas.",
-        },
-        {
-            "id": "q-5",
-            "text": "Which of the following numbers is a perfect square? A) 1057  B) 23453  C) 7928  D) 1089",
-            "type": "mcq",
-            "options": ["1057", "23453", "7928", "1089"],
-            "marks": 1,
-            "competency": "CU",
-            "bloomLevel": "Remember",
-            "correctAnswer": "1089 (33 * 33 = 1089. Perfect squares cannot end in 2, 3, 7, 8).",
-        },
-    ]
+    # Announcements and notifications. Lost teaching days are not seeded: they come only from lost periods that
+    # teachers record in the Time-Aware Engine, so the dashboards and the engine always show the same count.
+    for school in SCHOOLS:
+        pid, pname, _h, _g = school["principal"]
+        for title, content, role in [
+            ("Half-Yearly results published", "Half-Yearly Examination results for Classes 6-8 are available on LumenEIOS. Parent-teacher meeting on Saturday, 17 October.", "all"),
+            ("Periodic Test 2 schedule", "Periodic Test 2 for Classes 6-8 begins on 8 December 2026. The syllabus is the chapters completed after the Half-Yearly Examination.", "all"),
+            ("Submit worksheets by 20 November", "Mathematics and Science worksheets must be uploaded (photo or PDF of your handwritten answers) through Upload by 20 November.", "student"),
+        ]:
+            session.add(Announcement(school_id=school["id"], sender_id=pid, sender_name=pname, title=title,
+                                     content=content, target_role=role))
+    for s in students:
+        row = student_rows[s["id"]]
+        pid = f"par-{s['admission_no'].lower()}"
+        session.add(Notification(user_id=pid, title="Half-Yearly results available",
+                                 message=f"{s['name']}'s Half-Yearly Examination results and competency report are ready."))
+        if row.needs_support:
+            session.add(Notification(user_id=pid, title="Extra support suggested",
+                                     message=f"{s['name']} would benefit from extra practice in {row.support_area}. Differentiated homework will be assigned."))
+    for school_id, roster in TEACHER_ROSTER.items():
+        for key, *_ in roster:
+            session.add(Notification(user_id=teacher_user_id(key), title="Worksheets awaiting evaluation",
+                                     message="Students are uploading handwritten worksheets. Review the OCR text and evaluate them in Upload."))
 
-    assessments = [
-        Assessment(
-            id="asm-1",
-            school_id="school-1",
-            class_id="class-8a",
-            subject_id="sub-math",
-            title="Cycle 1 Baseline: Number Systems & Rational Algebraic Operations",
-            cycle_number=1,
-            date="2026-07-28",
-            duration_minutes=45,
-            total_marks=25,
-            questions_json=sample_questions[:5],
-            status="graded",
-            competency_focus_json=["LU", "CU", "AU", "CT"],
-        ),
-        Assessment(
-            id="asm-2",
-            school_id="school-1",
-            class_id="class-8a",
-            subject_id="sub-math",
-            title="Cycle 2 Mid-Term: Linear Equations, Quadrilaterals & Data Handling",
-            cycle_number=2,
-            date="2026-09-18",
-            duration_minutes=50,
-            total_marks=30,
-            questions_json=sample_questions[:5],
-            status="graded",
-            competency_focus_json=["CU", "AU", "CT"],
-        ),
-        Assessment(
-            id="asm-3",
-            school_id="school-1",
-            class_id="class-8a",
-            subject_id="sub-math",
-            title="Cycle 3 Pacing Check: Mensuration & Applied Geometric Reasoning",
-            cycle_number=3,
-            date="2026-10-24",
-            duration_minutes=45,
-            total_marks=25,
-            questions_json=sample_questions[:4],
-            status="scheduled",
-            competency_focus_json=["AU", "CT", "LU"],
-        ),
-        Assessment(
-            id="asm-4",
-            school_id="school-1",
-            class_id="class-8a",
-            subject_id="sub-sci",
-            title="Cycle 2 Diagnostic: Pressure, Atmospheric Density & Friction Dynamics",
-            cycle_number=2,
-            date="2026-09-22",
-            duration_minutes=40,
-            total_marks=20,
-            questions_json=sample_questions[:4],
-            status="graded",
-            competency_focus_json=["LU", "AU", "CT"],
-        ),
-    ]
-    for a in assessments:
-        session.add(a)
-
-    # 9. Submissions
-    submissions = [
-        AssessmentSubmission(
-            id="res-aarav-1",
-            assessment_id="asm-2",
-            student_id="user-student-1",
-            student_name="Aarav Patel",
-            marks_obtained=24,
-            total_marks=30,
-            percentage=80,
-            lu_score=78,
-            cu_score=82,
-            au_score=72,
-            ct_score=66,
-            overall_score=75,
-            feedback="Commendable algebraic accuracy. In Question 4 on field geometry, focus on explaining unit quadratics step-by-step.",
-            submission_date="2026-09-18",
-            is_scanned=True,
-        ),
-        AssessmentSubmission(
-            id="res-ananya-1",
-            assessment_id="asm-2",
-            student_id="student-ananya",
-            student_name="Ananya Patel",
-            marks_obtained=27,
-            total_marks=30,
-            percentage=90,
-            lu_score=89,
-            cu_score=85,
-            au_score=80,
-            ct_score=84,
-            overall_score=85,
-            feedback="Exceptional structural analysis and clear linguistic justification for geometric proofs.",
-            submission_date="2026-09-18",
-            is_scanned=True,
-        ),
-        AssessmentSubmission(
-            id="res-rohan-1",
-            assessment_id="asm-2",
-            student_id="student-3",
-            student_name="Rohan Gupta",
-            marks_obtained=17,
-            total_marks=30,
-            percentage=57,
-            lu_score=48,
-            cu_score=74,
-            au_score=62,
-            ct_score=50,
-            overall_score=58,
-            feedback="High conceptual grasp, but misread the wording in compound rate problems. Assigned reading-annotated scaffolding.",
-            submission_date="2026-09-18",
-            is_scanned=True,
-        ),
-        AssessmentSubmission(
-            id="res-priya-1",
-            assessment_id="asm-2",
-            student_id="student-4",
-            student_name="Priya Nair",
-            marks_obtained=19,
-            total_marks=30,
-            percentage=63,
-            lu_score=84,
-            cu_score=60,
-            au_score=52,
-            ct_score=58,
-            overall_score=64,
-            feedback="Fluent written answers, but slipped on unit conversion and practical spatial calculations.",
-            submission_date="2026-09-18",
-            is_scanned=True,
-        ),
-        AssessmentSubmission(
-            id="res-devansh-1",
-            assessment_id="asm-2",
-            student_id="student-5",
-            student_name="Devansh Kulkarni",
-            marks_obtained=29,
-            total_marks=30,
-            percentage=97,
-            lu_score=95,
-            cu_score=96,
-            au_score=92,
-            ct_score=90,
-            overall_score=93,
-            feedback="Mastery across all four dimensions. Ready for advanced olympiad problem sets.",
-            submission_date="2026-09-18",
-            is_scanned=True,
-        ),
-    ]
-    for sub in submissions:
-        session.add(sub)
-
-    # 10. Student Competency Snapshots (Historical Cycles)
-    snapshots = [
-        StudentCompetencySnapshot(
-            id="snap-aarav-c1",
-            student_id="user-student-1",
-            cycle_number=1,
-            recorded_at=datetime(2026, 7, 28, tzinfo=timezone.utc),
-            lu_score=68,
-            cu_score=72,
-            au_score=60,
-            ct_score=54,
-            overall_score=64,
-            notes="Cycle 1 Diagnostic Baseline",
-        ),
-        StudentCompetencySnapshot(
-            id="snap-aarav-c2",
-            student_id="user-student-1",
-            cycle_number=2,
-            recorded_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
-            lu_score=78,
-            cu_score=82,
-            au_score=72,
-            ct_score=66,
-            overall_score=75,
-            notes="Cycle 2 Mid-Term Assessment",
-        ),
-        StudentCompetencySnapshot(
-            id="snap-ananya-c1",
-            student_id="student-ananya",
-            cycle_number=1,
-            recorded_at=datetime(2026, 7, 28, tzinfo=timezone.utc),
-            lu_score=80,
-            cu_score=76,
-            au_score=70,
-            ct_score=72,
-            overall_score=75,
-            notes="Cycle 1 Diagnostic Baseline",
-        ),
-        StudentCompetencySnapshot(
-            id="snap-ananya-c2",
-            student_id="student-ananya",
-            cycle_number=2,
-            recorded_at=datetime(2026, 9, 18, tzinfo=timezone.utc),
-            lu_score=88,
-            cu_score=84,
-            au_score=79,
-            ct_score=82,
-            overall_score=83,
-            notes="Cycle 2 Mid-Term Assessment",
-        ),
-    ]
-    for snap in snapshots:
-        session.add(snap)
-
-    # 11. 180-Day Micro-Curriculum
-    chapters = [
-        {"name": "Rational Numbers & Operations", "core": 14, "supp": 6},
-        {"name": "Linear Equations in One Variable", "core": 16, "supp": 8},
-        {"name": "Understanding Quadrilaterals & Polygons", "core": 15, "supp": 7},
-        {"name": "Data Handling & Probability", "core": 14, "supp": 6},
-        {"name": "Squares, Square Roots & Cubes", "core": 12, "supp": 6},
-        {"name": "Comparing Quantities & Percentage Models", "core": 15, "supp": 7},
-        {"name": "Algebraic Expressions & Identities", "core": 18, "supp": 8},
-        {"name": "Mensuration: Surface Areas & Volumes", "core": 16, "supp": 8},
-        {"name": "Exponents, Powers & Scientific Notation", "core": 10, "supp": 4},
-        {"name": "Direct & Inverse Proportions", "core": 12, "supp": 5},
-    ]
-    modalities = ["Visual", "Auditory", "Reading/Writing", "Kinesthetic"]
-    blooms = ["Remember", "Understand", "Apply", "Analyze", "Evaluate", "Create"]
-
-    current_day = 1
-    current_instructional_day = 104
-
-    for ch_idx, ch in enumerate(chapters):
-        total_in_ch = ch["core"] + ch["supp"]
-        for i in range(1, total_in_ch + 1):
-            if current_day > 180:
-                break
-            is_core = i <= ch["core"]
-            if current_day < current_instructional_day:
-                status = "completed"
-            elif current_day == current_instructional_day:
-                status = "in-progress"
-            else:
-                status = "pending"
-
-            mod = modalities[(current_day + ch_idx) % len(modalities)]
-            bloom = blooms[(i + ch_idx) % len(blooms)]
-
-            c_day = CurriculumDay(
-                id=f"cur-day-{current_day}",
-                day_number=current_day,
-                class_id="class-8a",
-                subject_id="sub-math",
-                topic=f"{ch['name']} — Part {i}: {'Core Concept & Application' if is_core else 'Extension & Supplementary Inquiries'}",
-                objective=(
-                    f"Master fundamental mastery in {ch['name']} through direct structured modeling."
-                    if is_core
-                    else f"Synthesize exploratory case studies in {ch['name']}."
-                ),
-                teaching_process=f"Interactive lecture with {mod.lower()} activities, peer review, and exit check.",
-                measurable_outcome="Student can solve 3 target benchmark problems with >80% accuracy within 12 minutes.",
-                estimated_duration_mins=45,
-                vark_modality=mod,
-                bloom_level=bloom,
-                classification="core" if is_core else "supplementary",
-                status=status,
-                prerequisites_json=[f"Day {current_day - 1}"] if i > 1 else [],
-            )
-            session.add(c_day)
-            current_day += 1
-
-    # 12. Cross-Curricular Proposals
-    ccps = [
-        CrossCurricularProposal(
-            id="ccp-1",
-            title="Climate Rainfall Data Modeling & Civic Water Footprint",
-            school_id="school-1",
-            class_id="class-8a",
-            subject_ids_json=["sub-math", "sub-sci", "sub-eng"],
-            subject_names_json=["Mathematics", "Science", "English"],
-            target_day_numbers_json=[112, 113, 114],
-            learning_objectives_json=[
-                "Draw and interpret frequency polygons & double bar charts (Maths)",
-                "Analyze hydrological precipitation cycles and groundwater depletion (Science)",
-                "Compose an evidence-based persuasive community letter on rainwater harvesting (English)",
-            ],
-            activity="Students collect 10-year local monsoon precipitation data, calculate mean variances, and draft a civic water audit memorandum.",
-            vark_modality="Visual",
-            bloom_level="Evaluate",
-            estimated_duration_hours=4.0,
-            time_saved_hours=3.5,
-            status="pending",
-        ),
-        CrossCurricularProposal(
-            id="ccp-2",
-            title="Heritage Monument Geometry & Architectural Mensuration",
-            school_id="school-1",
-            class_id="class-8a",
-            subject_ids_json=["sub-math", "sub-sst"],
-            subject_names_json=["Mathematics", "Social Studies"],
-            target_day_numbers_json=[126, 127],
-            learning_objectives_json=[
-                "Calculate surface area and volume of composite cylindrical and hemispherical domes (Maths)",
-                "Evaluate Mughal & Dravidian architectural acoustic engineering principles (Social Studies)",
-            ],
-            activity="Scale blueprint modeling of historical domed structures using recycled card and calculating structural load distributions.",
-            vark_modality="Kinesthetic",
-            bloom_level="Create",
-            estimated_duration_hours=3.0,
-            time_saved_hours=2.0,
-            status="accepted",
-        ),
-        CrossCurricularProposal(
-            id="ccp-3",
-            title="Scientific Exponents in Astronomical & Microscopic Dimensions",
-            school_id="school-1",
-            class_id="class-8a",
-            subject_ids_json=["sub-math", "sub-sci"],
-            subject_names_json=["Mathematics", "Science"],
-            target_day_numbers_json=[142, 143],
-            learning_objectives_json=[
-                "Express numbers in standard scientific notation with negative exponents (Maths)",
-                "Compare cellular organelle dimensions with planetary orbits (Science)",
-            ],
-            activity="Interactive zoom-scale logarithmic scroll comparing viral diameter to the Milky Way galaxy.",
-            vark_modality="Visual",
-            bloom_level="Analyze",
-            estimated_duration_hours=2.5,
-            time_saved_hours=2.0,
-            status="pending",
-        ),
-    ]
-    for ccp in ccps:
-        session.add(ccp)
-
-    # 13. Homework Remediations
-    hwrs = [
-        HomeworkRemediation(
-            id="hwr-1",
-            student_id="student-3",
-            student_name="Rohan Gupta",
-            class_id="class-8a",
-            subject_id="sub-math",
-            title="Word Problem Linguistic Scaffolding: Visual Highlighting of Keywords",
-            competency_target="LU",
-            reason="Scored 48/100 in Language Understanding on Cycle 2 assessment. Struggles with phrase parsing ('per unit time', 'diminished by').",
-            description="Worksheet with 6 real-world rate problems featuring color-coded key phrases, bilingual glossaries, and step-by-step clause breakdown.",
-            due_date="2026-10-16",
-            status="assigned",
-        ),
-        HomeworkRemediation(
-            id="hwr-2",
-            student_id="student-4",
-            student_name="Priya Nair",
-            class_id="class-8a",
-            subject_id="sub-math",
-            title="Concrete-to-Abstract Mensuration: Kitchen Container Volume Lab",
-            competency_target="AU",
-            reason="Scored 52/100 in Application Understanding. Theoretical grasp is high, but commits dimensional conversion errors (m³ vs Liters).",
-            description="Home activity: Measure dimensions of 3 cylindrical food containers, compute theoretical volume in cm³, and verify with a graduated measuring beaker.",
-            due_date="2026-10-18",
-            status="assigned",
-        ),
-        HomeworkRemediation(
-            id="hwr-3",
-            student_id="user-student-1",
-            student_name="Aarav Patel",
-            class_id="class-8a",
-            subject_id="sub-math",
-            title="Critical Evaluation of Misleading Advertising Data Graphs",
-            competency_target="CT",
-            reason="Scored 66/100 in Critical Thinking. Needs targeted practice in identifying truncated axes and perceptual distortion.",
-            description="Analyze 3 commercial news adverts showing truncated bar chart axes. Identify perceptual distortion and re-plot with honest zero baselines.",
-            due_date="2026-10-17",
-            status="assigned",
-        ),
-    ]
-    for hwr in hwrs:
-        session.add(hwr)
-
-    # 13.5 Seed Document for OCR processing
-    session.add(
-        Document(
-            id="doc-demo-1",
-            school_id="school-1",
-            uploader_id="user-teacher-1",
-            file_name="grade8_math_midterm_aarav_patel.jpg",
-            file_size=245000,
-            mime_type="image/jpeg",
-            storage_path="./storage_uploads/grade8_math_midterm_aarav_patel.jpg",
-            page_count=1,
-            status="ready",
-        )
-    )
-
-    # 14. OCR Model Evaluation and Active Deployment
-    session.add(
-        ModelEvaluation(
-            id="eval-trocr-v1.0",
-            model_id="trocr-handwritten-indic",
-            model_version="v1.0",
-            cer=0.042,
-            wer=0.078,
-            field_accuracy=0.965,
-            latency_ms=180,
-            status="passed",
-            notes="Passed baseline gating: CER < 0.05 and Field Accuracy > 0.95 across Indian school handwriting test set.",
-        )
-    )
-    session.add(
-        ModelDeployment(
-            id="deploy-trocr-v1.0",
-            model_id="trocr-handwritten-indic",
-            model_version="v1.0",
-            provider="simulated",
-            is_active=True,
-            deployed_by="Dr. Rajesh Sharma",
-        )
-    )
-
-    # 15. Notifications
-    notifications = [
-        Notification(
-            id="notif-1",
-            user_id="user-teacher-1",
-            title="Pacing Risk Alert: Class 8-A Mathematics",
-            message="16 lost instructional days have reduced buffer to -4 days. Syllabus compression is recommended.",
-            type="alert",
-            is_read=False,
-            link="/teacher/time-aware",
-        ),
-        Notification(
-            id="notif-2",
-            user_id="user-teacher-1",
-            title="Cross-Curricular Proposal Ready for Review",
-            message="Syllabus Engine detected 3.5 hrs recoverable time between Maths (Data Handling) and Science.",
-            type="info",
-            is_read=False,
-            link="/teacher/time-aware",
-        ),
-        Notification(
-            id="notif-3",
-            user_id="user-principal-1",
-            title="Class 8-A Pacing Warning",
-            message="Vikram Sengupta has recorded 16 cumulative lost teaching days. Review proposed compression.",
-            type="warning",
-            is_read=False,
-            link="/principal/dashboard",
-        ),
-        Notification(
-            id="notif-4",
-            user_id="user-student-1",
-            title="New Adaptive Homework Assigned",
-            message="Mr. Sengupta assigned 'Critical Evaluation of Misleading Data Graphs' due on Oct 17.",
-            type="info",
-            is_read=False,
-            link="/student/dashboard",
-        ),
-        Notification(
-            id="notif-5",
-            user_id="user-parent-1",
-            title="Aarav Completed Cycle 2 Assessment",
-            message="Aarav scored 80% (LU: 78, CU: 82, AU: 72, CT: 66). Click to review teacher feedback.",
-            type="success",
-            is_read=False,
-            link="/parent/dashboard",
-        ),
-    ]
-    for n in notifications:
-        session.add(n)
-
-    # 16. Audit Events
-    audit_events = [
-        AuditEvent(
-            id="log-1",
-            timestamp="2026-10-12 14:32",
-            user_id="user-admin",
-            user_name="Dr. Rajesh Sharma",
-            action="Platform Baseline Recalibration",
-            details="Initiated statewide Q2 competency aggregation across 5 affiliated schools.",
-            category="system",
-        ),
-        AuditEvent(
-            id="log-2",
-            timestamp="2026-10-12 11:15",
-            user_id="user-principal-1",
-            user_name="Dr. Sunita Deshmukh",
-            action="Recorded Lost Instructional Days",
-            details="Added 2 lost instructional days due to District Adolescent Health Drive.",
-            category="curriculum",
-        ),
-        AuditEvent(
-            id="log-3",
-            timestamp="2026-10-11 16:40",
-            user_id="user-teacher-1",
-            user_name="Vikram Sengupta",
-            action="Approved Cross-Curricular Integration",
-            details="Merged Monument Geometry (Maths + Social Studies) saving 2 instructional periods.",
-            category="curriculum",
-        ),
-        AuditEvent(
-            id="log-4",
-            timestamp="2026-10-10 09:20",
-            user_id="user-teacher-1",
-            user_name="Vikram Sengupta",
-            action="Graded Offline Optical Scan Sheets",
-            details="Verified AI OCR transcription for Class 8-A Cycle 2 Mathematics sheets.",
-            category="assessment",
-        ),
-    ]
-    for ae in audit_events:
-        session.add(ae)
-
+    session.add(AuditEvent(timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"), user_id=ADMIN[0],
+                           user_name="System", action="Demonstration database created",
+                           details=f"{len(SCHOOLS)} schools, {len(students)} students, {len(users)} accounts.",
+                           category="user"))
     await session.commit()
-    await ensure_source_documents_and_question_bank(session)
-    logger.info("Database seeding successfully completed!")
-
-
-async def ensure_source_documents_and_question_bank(session: AsyncSession) -> None:
-    """Idempotently seeds reference curriculum source documents and initial question bank items."""
-    doc_check = await session.execute(select(Document).filter(Document.id == "doc-src-math-1"))
-    if not doc_check.scalars().first():
-        source_docs = [
-            Document(
-                id="doc-src-math-1",
-                school_id="school-1",
-                uploader_id="user-teacher-1",
-                subject_id="sub-math",
-                doc_type="source_material",
-                file_name="NCERT_Grade8_Maths_Ch11_Mensuration_&_Volumes.pdf",
-                file_size=1420500,
-                mime_type="application/pdf",
-                storage_path="./storage_uploads/NCERT_Grade8_Maths_Ch11_Mensuration.pdf",
-                page_count=18,
-                content_hash="sha256-mensuration-ch11-v1",
-                extracted_text=(
-                    "Chapter 11: Mensuration & Three-Dimensional Volumes. "
-                    "Surface area of cuboid = 2(lb + bh + hl). Volume of cuboid = l * b * h. "
-                    "Volume of cylinder = pi * r^2 * h. 1 cubic meter (m3) = 1000 Liters. "
-                    "Doubling linear dimensions scales perimeter by factor 2, surface area by factor 4, and volume by factor 8."
-                ),
-                status="ready",
-            ),
-            Document(
-                id="doc-src-math-2",
-                school_id="school-1",
-                uploader_id="user-teacher-1",
-                subject_id="sub-math",
-                doc_type="source_material",
-                file_name="CBSE_Competency_Handbook_Rational_Numbers_&_Polygons.pdf",
-                file_size=980200,
-                mime_type="application/pdf",
-                storage_path="./storage_uploads/CBSE_Rational_Numbers_Polygons.pdf",
-                page_count=14,
-                content_hash="sha256-rational-polygons-v1",
-                extracted_text=(
-                    "Rational Numbers & Geometric Classification. "
-                    "Multiplicative inverse (reciprocal) of a/b is b/a such that (a/b)*(b/a) = 1. "
-                    "Zero has no multiplicative inverse. Every square satisfies all properties of a rectangle "
-                    "(four 90-degree interior angles and equal opposite sides), making squares a subset of rectangles."
-                ),
-                status="ready",
-            ),
-            Document(
-                id="doc-src-sci-1",
-                school_id="school-1",
-                uploader_id="user-teacher-1",
-                subject_id="sub-sci",
-                doc_type="source_material",
-                file_name="NCERT_Grade8_Science_Force_Pressure_&_Friction.pdf",
-                file_size=1850000,
-                mime_type="application/pdf",
-                storage_path="./storage_uploads/NCERT_Science_Force_Friction.pdf",
-                page_count=22,
-                content_hash="sha256-science-friction-v1",
-                extracted_text=(
-                    "Force, Pressure, and Friction Dynamics. "
-                    "Friction is a contact force opposing relative motion between surfaces in contact. "
-                    "Gravitation is a non-contact attractive force. Fluid pressure increases with depth. "
-                    "Buoyant force acts upward opposing weight; wet roadways cause hydroplaning by reducing tire friction."
-                ),
-                status="ready",
-            ),
-            Document(
-                id="doc-src-eng-1",
-                school_id="school-1",
-                uploader_id="user-teacher-2",
-                subject_id="sub-eng",
-                doc_type="source_material",
-                file_name="NEP2020_Reading_Comprehension_&_Analytical_Syntax.pdf",
-                file_size=760400,
-                mime_type="application/pdf",
-                storage_path="./storage_uploads/NEP2020_Reading_Syntax.pdf",
-                page_count=12,
-                content_hash="sha256-english-syntax-v1",
-                extracted_text=(
-                    "Analytical Reading & Clause Identification. "
-                    "In complex scientific sentences, identifying the grammatical subject and active verb clarifies cause and effect. "
-                    "Persuasive civic writing requires empirical evidence, structured counterarguments, and clear synthesis."
-                ),
-                status="ready",
-            ),
-        ]
-        for sd in source_docs:
-            session.add(sd)
-
-    qb_check = await session.execute(select(QuestionBankItem))
-    if not qb_check.scalars().first():
-        initial_qb = [
-            QuestionBankItem(
-                id="qb-1",
-                school_id="school-1",
-                subject_id="sub-math",
-                text="A water tank is in the shape of a cuboid with length 4m, breadth 3m, and depth 2m. If water is poured at the rate of 60 liters per minute, how many hours will it take to fill the tank completely? (1 m³ = 1000 liters)",
-                type="practical",
-                options_json=[],
-                correct_answer="Volume = 4 * 3 * 2 = 24 m³ = 24,000 L. Time = 24,000 / 60 = 400 minutes = 6 hours and 40 minutes.",
-                marking_rubric="1m for cuboid volume formula (24 m³); 1m for m³ to Liter conversion (24,000 L); 1m for rate division (400 mins); 1m for hours/mins conversion (6h 40m).",
-                marks=4,
-                competency="AU",
-                bloom_level="Apply",
-                source_document_ids_json=["doc-src-math-1"],
-                source_document_names_json=["NCERT_Grade8_Maths_Ch11_Mensuration_&_Volumes.pdf"],
-                is_ai_generated=False,
-                created_by="user-teacher-1",
-            ),
-            QuestionBankItem(
-                id="qb-2",
-                school_id="school-1",
-                subject_id="sub-math",
-                text="Identify the multiplicative inverse of -13/19 and explain why the product of a rational number and its inverse is always 1.",
-                type="short",
-                options_json=[],
-                correct_answer="-19/13. By definition, a/b * (b/a) = (a*b)/(b*a) = 1.",
-                marking_rubric="1m for stating -19/13; 1m for algebraic cancellation explanation.",
-                marks=2,
-                competency="CU",
-                bloom_level="Understand",
-                source_document_ids_json=["doc-src-math-2"],
-                source_document_names_json=["CBSE_Competency_Handbook_Rational_Numbers_&_Polygons.pdf"],
-                is_ai_generated=False,
-                created_by="user-teacher-1",
-            ),
-            QuestionBankItem(
-                id="qb-3",
-                school_id="school-1",
-                subject_id="sub-math",
-                text="Which of the following numbers is a perfect square? A) 1057  B) 23453  C) 7928  D) 1089",
-                type="mcq",
-                options_json=["1057", "23453", "7928", "1089"],
-                correct_answer="1089",
-                marking_rubric="1m for selecting 1089 (33 * 33 = 1089; integers ending in 2, 3, 7, 8 cannot be perfect squares).",
-                marks=1,
-                competency="CU",
-                bloom_level="Remember",
-                source_document_ids_json=["doc-src-math-2"],
-                source_document_names_json=["CBSE_Competency_Handbook_Rational_Numbers_&_Polygons.pdf"],
-                is_ai_generated=False,
-                created_by="user-teacher-1",
-            ),
-            QuestionBankItem(
-                id="qb-4",
-                school_id="school-1",
-                subject_id="sub-sci",
-                text="Compare and contrast the forces of Friction and Gravitation. In what practical scenario would reducing friction result in a dangerous loss of mechanical control?",
-                type="descriptive",
-                options_json=[],
-                correct_answer="Friction is a contact force opposing relative motion; gravity is a non-contact field attraction. On wet roadways, hydroplaning eliminates tire-road friction, leading to steering failure.",
-                marking_rubric="2m for distinguishing contact vs non-contact forces; 2m for valid real-world loss-of-control example (hydroplaning/braking).",
-                marks=4,
-                competency="CT",
-                bloom_level="Analyze",
-                source_document_ids_json=["doc-src-sci-1"],
-                source_document_names_json=["NCERT_Grade8_Science_Force_Pressure_&_Friction.pdf"],
-                is_ai_generated=False,
-                created_by="user-teacher-1",
-            ),
-        ]
-        for item in initial_qb:
-            session.add(item)
-
-    await session.commit()
-
+    logger.info("Seeded %d schools, %d students, %d accounts, %d graded assessments.",
+                len(SCHOOLS), len(students), len(users), len(events))

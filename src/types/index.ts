@@ -1,4 +1,4 @@
-export type Role = 'admin' | 'principal' | 'teacher' | 'student' | 'parent';
+export type Role = 'developer' | 'admin' | 'principal' | 'teacher' | 'student' | 'parent';
 
 export type InfrastructureTier = 'high-tech' | 'standard' | 'low-tech';
 
@@ -27,6 +27,8 @@ export interface User {
   assignedSubjectIds?: string[];
   linkedChildIds?: string[];
   designation?: string;
+  /** True when signed in via the development demo-root login (LEOFELIX / KVR). */
+  demoRoot?: boolean;
 }
 
 export interface School {
@@ -82,6 +84,13 @@ export interface Student {
   homeworkCompletionRate: number;
   needsSupport: boolean;
   supportArea?: string;
+  /** Optional admission year used by school performance charts. */
+  joinedYear?: number;
+  /** Admission number (students' login username). */
+  admissionNo?: string;
+  /** Present on `/classes/students/me` profile responses. */
+  subjectNames?: string[];
+  parentNames?: string[];
 }
 
 export interface Question {
@@ -99,6 +108,7 @@ export interface Question {
   sourceDocumentIds?: string[];
   sourceDocumentNames?: string[];
   isAiGenerated?: boolean;
+  kcMappings?: Array<{ kcId: string; name: string; relevance: number }>;
 }
 
 export interface SourceDocument {
@@ -291,6 +301,42 @@ export interface CrossCurricularProposal {
   status: 'pending' | 'accepted' | 'rejected';
 }
 
+export interface ExtractedBlock {
+  kind: 'text' | 'equation';
+  content: string;
+}
+
+export interface SheetAssignment {
+  id: string;
+  teacherId: string;
+  teacherName: string;
+  schoolId: string;
+  classId: string;
+  className: string;
+  subject: string;
+  title: string;
+  instructions: string;
+  dueDate: string;
+  createdAt: string;
+}
+
+export interface AnswerSheetUpload {
+  id: string;
+  assignmentId: string;
+  assignmentTitle: string;
+  studentId: string;
+  studentName: string;
+  classId: string;
+  className: string;
+  schoolId: string;
+  subject: string;
+  fileName: string;
+  mimeType: string;
+  previewDataUrl?: string;
+  uploadedAt: string;
+  blocks: ExtractedBlock[];
+}
+
 export interface HomeworkRemediation {
   id: string;
   studentId: string;
@@ -302,6 +348,8 @@ export interface HomeworkRemediation {
   reason: string;
   description: string;
   dueDate: string;
+  /** When the student handed the work in. Absent while it is still assigned. */
+  submittedAt?: string;
   status: 'assigned' | 'submitted' | 'reviewed';
   score?: number;
 }
@@ -321,7 +369,7 @@ export interface NotificationItem {
   userId: string;
   title: string;
   message: string;
-  type: 'info' | 'warning' | 'success' | 'alert';
+  type: 'info' | 'warning' | 'success' | 'alert' | 'announcement';
   read: boolean;
   createdAt: string;
   link?: string;

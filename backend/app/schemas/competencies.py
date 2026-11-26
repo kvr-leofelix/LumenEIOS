@@ -18,6 +18,7 @@ class StudentOut(BaseSchema):
     class_name: str
     name: str
     roll_no: int
+    admission_no: Optional[str] = None
     gender: str
     attendance_pct: float
     competencies: CompetencyScoresSchema
@@ -27,6 +28,11 @@ class StudentOut(BaseSchema):
     homework_completion_rate: float
     needs_support: bool
     support_area: Optional[str] = None
+
+
+class StudentProfileOut(StudentOut):
+    subject_names: List[str]
+    parent_names: List[str]
 
 
 class ClassCompetencyAnalyticsOut(BaseSchema):

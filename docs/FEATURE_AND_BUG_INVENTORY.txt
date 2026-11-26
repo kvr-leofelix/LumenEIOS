@@ -1,0 +1,209 @@
+LUMENEIOS FEATURE AND BUG INVENTORY
+Analysis date: 2026-11-15
+Workspace: arena/apps/lumeneios
+
+Purpose
+-------
+Concise code-oriented map of the major LumenEIOS feature areas and their current
+known limitations. Each bug/limitation is listed as its own feature-style entry
+so it can be assigned and tracked. This is a repository inspection, not a full
+runtime/browser audit; items marked "verify" are risks or gaps that need live
+reproduction before being called confirmed defects.
+
+How to read this report
+-----------------------
+"Implemented" means implementation files and/or tests are present. It does not
+mean production deployment or every user flow was validated. Feature areas are
+grouped by application workflow; some have both backend and frontend code.
+The repository contains 98 backend test files and a large frontend test suite.
+No tests were run for this inventory.
+
+CORE APPLICATION AND ACCESS
+---------------------------
+Feature: Authentication and session restoration
+Description: Login, bearer-token/session handling, protected routes, and role-
+based default destinations. See src/context/AuthContext.tsx, src/App.tsx,
+backend/app/api/v1/auth.py, backend/app/core/security.py.
+Status: Implemented; auth security tests exist.
+
+Feature: Role-based navigation and authorization
+Description: Admin, principal, teacher, student, parent, and developer views
+with shared layout and permission-aware routes. See src/lib/permissions.ts,
+src/components/layout/Sidebar.tsx, backend/app/core/permissions.py.
+Status: Implemented in the app; verify role enforcement on each endpoint and
+whether demo role switching is enabled only in intended environments.
+
+Feature: School onboarding and administration
+Description: School, user, class/student/teacher, academic calendar and
+configuration management. See src/pages/admin, src/pages/principal,
+backend/app/api/v1/{schools,users,classes,teachers,admin,calendar}.py.
+Status: Broad CRUD/workflows exist. Verify tenant isolation and full create-
+edit-delete flows against a configured backend.
+
+Feature: Audit and developer tools
+Description: Audit log, feature flags, model/health/configuration and data-
+quality views. See src/pages/admin/AuditLogs.tsx, src/pages/developer,
+backend/app/api/v1/{audit,developer,model_registry}.py.
+Status: Implemented in parts; deployment-dependent tools and permission
+boundaries need environment-specific validation.
+
+BUG / LIMITATION: Demo and live modes can be confused
+Description: README describes historical multi-role demo screens, while the
+current README says authenticated homework is the default and demos require
+VITE_DEMO_MODE=true. Confirm deployment flags and visible demo-data warnings
+before presenting sample data as live records. This is a configuration/product
+risk, not a reproduced bug.
+
+CURRICULUM CATALOGUE AND PLANNING
+-------------------------------
+Feature: NCERT catalogue read API
+Description: Authenticated release, subject, availability, node and mapping
+read routes with pagination, evidence-aware redaction, and explicit empty
+states. See backend/app/api/v1/ncert.py and services/ncert_catalogue_service.py.
+Status: Implemented as an empty-catalogue API; API contract and backend tests
+exist. No runtime source/node/mapping data is populated.
+
+Feature: Editorial mapping review
+Description: Admin-only, append-only, revision-checked APPROVED/REJECTED/
+REVISION_REQUESTED decisions with evidence and rights gates. See
+backend/app/models/ncert_review.py and services/ncert_catalogue_service.py.
+Status: Implemented as editorial ledger only. It does not verify sources,
+change rights/applicability, publish releases or enable recovery.
+
+Feature: Curriculum catalogue screens
+Description: Browse source/evidence metadata, hierarchy, availability,
+coverage and mapping review in API and research-snapshot modes. See
+src/features/curriculum/.
+Status: UI and API client exist; mock/research snapshot is explicitly labelled.
+Backend catalogue is empty and no automatic API-to-mock fallback is intended.
+
+BUG / LIMITATION: NCERT content and current applicability are unavailable
+Description: The Phase 0 report says no verified current chapter/topic/outcome
+crosswalk exists; source applicability, language equivalence and permissions
+remain unresolved. Do not interpret mock research observations or an empty API
+as verified/current curriculum coverage. Import/publication is unauthorized.
+This is a known data/product blocker, not a code defect.
+
+Feature: Teacher curriculum planning and syllabus coverage
+Description: Curriculum selection, pacing and coverage planning, with teacher
+and principal oversight. See src/pages/teacher/CurriculumPlanner180.tsx,
+src/pages/principal/CoverageOversight.tsx and backend/app/services/plan_service.py.
+Status: Implemented with planning APIs and tests; source applicability depends
+on school plan data and must not be inferred from the NCERT catalogue.
+
+TIME-AWARE SCHEDULING AND RECOVERY
+----------------------------------
+Feature: Academic calendar and teaching plan
+Description: Working-day configuration, curriculum allocation, schedule
+capacity, daily progress and calendar impact. See src/pages/admin/AcademicConfig.tsx,
+src/pages/time-aware, src/features/teacherPlan and backend/app/services/
+{calendar_service,annual_allocation,teacher_plan_service}.py.
+Status: Implemented with focused frontend/backend tests.
+
+Feature: Lost-period recording and recovery proposals
+Description: Record disrupted individual teaching periods, recalculate pacing,
+inspect relationships and proposed recovery, and track decisions. See
+src/pages/time-aware/{LostPeriodRecorder,PlanDetail,RelationshipsPanel}.tsx,
+backend/app/services/{lost_period_service,time_aware_engine,relationship_service}.py.
+Status: Implemented; preserve original plans and record revisions. Rescheduled
+work must not count as completed; AI suggestions are not verified.
+
+BUG / LIMITATION: Recovery eligibility depends on evidence and workflow state
+Description: Catalogue API always returns recovery_eligible=false. Research
+relationships are not runtime-verified mappings. Verify any UI proposal cannot
+mark instruction complete or bypass human review. This is primarily an
+intentional safety boundary; report an actual defect only if a flow violates it.
+
+ASSESSMENT, OCR, AND LEARNING
+-----------------------------
+Feature: Assessment authoring and question generation
+Description: Teacher assessment builder, question-bank selection, AI question
+generation, guidance and competency tagging. See src/pages/teacher/AssessmentBuilder.tsx,
+src/pages/homework/AiQuestionGenerator.tsx, backend/app/services/ai_question_service.py.
+Status: Implemented; AI provider/configuration may be required. Verify generated
+content and error states with the deployed provider.
+
+Feature: OCR upload and scan review
+Description: Upload image/PDF, extract text, retain history, and let a teacher
+review scan output. See src/pages/teacher/ScanReview.tsx, backend/app/api/v1/
+{documents,ocr}.py and backend/app/services/{ocr_service,gemini_ocr_service}.py.
+Status: Pipeline and docs exist. OCR service contains an abstract NotImplementedError
+path; establish whether it is only the base interface or can be reached in the
+configured runtime. GPU/model/provider availability is environment-dependent.
+
+BUG / LIMITATION: OCR provider/model setup can prevent extraction
+Description: Some OCR implementations require external credentials, model
+weights or GPU setup. Verify startup and user-visible failure handling for the
+chosen deployment. The base NotImplementedError alone does not prove a broken
+production path.
+
+Feature: Differentiated homework authoring and review
+Description: Analyze learning gaps, select/assemble questions, save immutable
+question snapshots, teacher review, assignment and student access/submission.
+See backend/app/modules/differentiated_homework and src/pages/homework.
+Status: Extensive backend workflows and tests are documented in the module
+README. Manual grading/release is supported; automated grading is not implied.
+
+BUG / LIMITATION: Approved homework assignment milestone may be incomplete
+Description: Module documentation says approved-to-assigned is defined for a
+future milestone with no endpoint at that point in the documented workflow.
+Check current router implementation before assigning; this report does not
+assume later code has not completed it.
+
+Feature: LearnSphere activities and assessments
+Description: Learning support, journeys, missions, teach-back and assessment
+evidence. See src/pages/learnsphere and backend/app/modules/learnsphere.
+Status: Implemented across UI and backend; tests/docs exist. Confirm data
+ownership and whether each activity is persisted or demo-only in the current
+mode.
+
+Feature: Student progress and parent reporting
+Description: Competency evidence, subject progress, timelines, parent views and
+school reports. See src/pages/progress, src/pages/parent, backend/app/modules/
+student_progress and backend/app/services/progress.py.
+Status: Implemented; evidence quality and role-scoped child access are key
+validation points.
+
+Feature: Remediation and student homework workspaces
+Description: Teacher remediation assignments, student/parent workspaces and
+homework completion views. See src/pages/teacher/RemediationManager.tsx,
+src/pages/homework and backend homework APIs.
+Status: Implemented; do not treat homework completion as classroom teaching
+completion.
+
+BUGS / CROSS-CUTTING ITEMS TO VERIFY
+-----------------------------------
+Feature: Backend migration and schema compatibility checks
+Description: Catalogue migrations are additive and guarded, but the integration
+status report states schema guards compare column names rather than full types
+and constraints, and migrations are not managed by a tracked Alembic runner.
+Risk: an incompatible existing schema could pass a shallow check. Validate on
+a disposable schema before deployment; never reset application databases.
+
+Feature: SQLite foreign-key behavior
+Description: SQLite FK enforcement varies by connection. Catalogue API has an
+isolated FK-enabled connection; the differentiated-homework README documents a
+legacy shared-engine limitation for raw SQL deletes. Confirm any new code path
+enforces the required constraints on its connection.
+
+Feature: Live integration and deployment verification
+Description: Repository docs report no live PostgreSQL test, deployment
+migration, or full frontend/API browser integration for the catalogue handoff.
+These are outstanding verification tasks, not confirmed runtime bugs.
+
+Feature: Test coverage and regression protection
+Description: Backend and frontend test suites cover many core workflows,
+including catalogue, planning, homework and auth. This inventory did not run
+tests. Run the project suites in the intended environment before release; a
+passing unit suite does not establish production provider/database readiness.
+
+Suggested follow-up questions
+-----------------------------
+1. Should the next pass focus on a specific feature group (for example OCR,
+   curriculum planning, or homework), or should every verify item be reproduced?
+2. Which environment should define expected behavior: current local demo mode,
+   authenticated backend mode, or a named deployment?
+3. Should confirmed bugs in a follow-up pass be fixed and tested, or only
+   recorded with reproduction steps and file references?
+
+End of inventory.

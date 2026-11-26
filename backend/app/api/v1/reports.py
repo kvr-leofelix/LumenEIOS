@@ -1,10 +1,12 @@
+from backend.app.core.config import settings
+from backend.app.api.dependencies import require_bearer_token
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from backend.app.api.dependencies import get_current_user, require_roles
 from backend.app.models.entities import User
 
-router = APIRouter(prefix="/reports", tags=["Reports"])
+router = APIRouter(prefix="/reports", tags=["Reports"], dependencies=[Depends(require_bearer_token)])
 
 
 class ReportGenerateRequest(BaseModel):
@@ -18,6 +20,8 @@ async def generate_report(
     req: ReportGenerateRequest,
     current_user: User = Depends(require_roles("admin", "principal", "teacher"))
 ):
+    if not settings.DEMO_MODE:
+        raise HTTPException(status_code=501, detail="Report generation is available only as an offline demonstration.")
     return {
         "report_id": f"rep-{req.report_type}-2026",
         "title": f"Official Certified {req.report_type.replace('_', ' ').title()}",
@@ -33,6 +37,8 @@ async def download_report_pdf(
     report_id: str,
     current_user: User = Depends(require_roles("admin", "principal", "teacher"))
 ):
+    if not settings.DEMO_MODE:
+        raise HTTPException(status_code=501, detail="Demo reports are not official student results.")
     content = f"""%PDF-1.4
 % LUMENEIOS NEP 2020 CERTIFIED REPORT
 Report ID: {report_id}

@@ -13,6 +13,7 @@ import {
   HomeworkRemediation,
   AuditLog,
   NotificationItem,
+  SheetAssignment,
 } from '../types';
 
 export const initialSchools: School[] = [
@@ -971,7 +972,8 @@ export const initialHomeworkRemediations: HomeworkRemediation[] = [
     reason: 'Scored 52/100 in Application Understanding. Theoretical grasp is high, but commits dimensional conversion errors (m³ vs Liters).',
     description: 'Home activity: Measure dimensions of 3 cylindrical food containers, compute theoretical volume in cm³, and verify with a graduated measuring beaker.',
     dueDate: '2026-10-18',
-    status: 'assigned',
+    submittedAt: '2026-10-21',
+    status: 'submitted',
   },
   {
     id: 'hwr-3',
@@ -984,7 +986,8 @@ export const initialHomeworkRemediations: HomeworkRemediation[] = [
     reason: 'Scored 66/100 in Critical Thinking. Needs targeted practice in identifying truncated axes and perceptual distortion.',
     description: 'Analyze 3 commercial news adverts showing truncated bar chart axes. Identify the perceptual distortion and re-plot with honest zero baselines.',
     dueDate: '2026-10-17',
-    status: 'assigned',
+    submittedAt: '2026-10-16',
+    status: 'reviewed',
   },
 ];
 
@@ -1036,7 +1039,7 @@ export const initialNotifications: NotificationItem[] = [
     type: 'alert',
     read: false,
     createdAt: 'Today, 09:15 AM',
-    link: '/teacher/time-aware',
+    link: '/teacher/dashboard',
   },
   {
     id: 'notif-2',
@@ -1046,7 +1049,7 @@ export const initialNotifications: NotificationItem[] = [
     type: 'info',
     read: false,
     createdAt: 'Today, 11:00 AM',
-    link: '/teacher/time-aware',
+    link: '/teacher/dashboard',
   },
   {
     id: 'notif-3',
@@ -1077,6 +1080,22 @@ export const initialNotifications: NotificationItem[] = [
     read: false,
     createdAt: 'Yesterday, 04:30 PM',
     link: '/parent/dashboard',
+  },
+];
+
+export const initialSheetAssignments: SheetAssignment[] = [
+  {
+    id: 'assign-mensuration-8a',
+    teacherId: 'user-teacher-1',
+    teacherName: 'Vikram Sengupta',
+    schoolId: 'school-1',
+    classId: 'class-8a',
+    className: 'Class 8-A',
+    subject: 'Mathematics',
+    title: 'Mensuration: water tank volume',
+    instructions: 'Solve the cuboid tank question and the cube surface-area question. Photograph the handwritten sheet and upload it.',
+    dueDate: '2026-11-12',
+    createdAt: '2026-11-06T10:00:00.000Z',
   },
 ];
 
